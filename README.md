@@ -112,7 +112,7 @@ No Python installation or source setup required.
 **Prerequisites:** Python 3.13+, Windows 10/11, Inno Setup 6 (only needed for building installers)
 
 ```bash
-git clone https://github.com/<your-username>/Smart-Software-Deployer.git
+git clone https://github.com/rohitkvanjre/SmartSoftwareDeployer.git
 cd Smart-Software-Deployer
 pip install -r requirements.txt
 ```
