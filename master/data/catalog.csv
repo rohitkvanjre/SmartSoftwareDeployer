@@ -1,0 +1,8 @@
+name,version,filename,silent_flags,post_install_cmd,required_os,required_arch,pre_install_kill,post_install_kill,pre_uninstall_kill,install_context
+7-Zip 25.01,25.01,7z2501 x64.exe,/S,,,AMD64,,,,
+7-Zip (32-bit),23.01,7z2501 x32.exe,/S,,,,,,,
+VLC media player,3.0.21,vlc-3.0.21-win64.exe,/S,,,,,,,
+Postman x86_64 11.23.3,11.23.3,Postman-win64-Setup.exe,/S,,,,"[""Postman.exe"", ""Update.exe""]","[""Postman.exe"", ""Update.exe""]","[""Postman.exe"", ""Update.exe""]",user
+Install and Configure MySQL,8.0.39,install_mysql.bat,,,,,,,,
+Git,2.51.0,Git-2.51.0-64-bit.exe,/VERYSILENT /NORESTART,,,,,,,
+DB.Browser.for.SQLite-v3.13.1-win64,,DB.Browser.for.SQLite-v3.13.1-win64.msi,,,,,,,,

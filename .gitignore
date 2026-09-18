@@ -1,0 +1,46 @@
+# Ignore Python cache and build files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore compiled executables
+
+# Ignore virtual environments
+venv/
+env/
+
+# Ignore database and logs
+*.sqlite3
+*.log
+
+# Ignore sensitive configs or keys
+.env
+*.key
+*.pem
+
+# Ignore PyInstaller build outputs
+dist/
+build/
+*.spec
+spec files/
+# ...except the hand-authored installer build specs (these are source, not
+# generated output) and the intermediate/output folders they produce.
+!installer_build/*.spec
+installer_build/work/
+installer_build/out/
+
+documents/
+batch-files/
+
+# Ignore local secrets and runtime data
+master/auth_manager/users.json
+master/data/config.json
+slave/config.json
+master/data/deployer.db
+master/data/cert.conf
+*.db
+
+# Ignore real installer files dropped in for local testing (third-party
+# binaries -- not project source, shouldn't be redistributed via git)
+installers/*

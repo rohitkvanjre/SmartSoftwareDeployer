@@ -1,0 +1,6 @@
+pywin32
+cryptography
+psutil
+Pillow
+pystray
+packaging

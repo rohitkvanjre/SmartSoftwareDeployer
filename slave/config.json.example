@@ -1,0 +1,30 @@
+{
+  "MASTER_IP": null,
+  "SERVICE_NAME": "SoftwareDeployerAgent",
+  "PORTS": {
+    "control": 5050,
+    "discovery": 5051,
+    "files": 5052
+  },
+  "TLS": {
+    "enabled": true,
+    "verify": false,
+    "ca_cert": "cert.pem"
+  },
+  "TIMEOUTS": {
+    "script": 900,
+    "msi": 600,
+    "exe": 600
+  },
+  "FTP": {
+    "secure": true,
+    "host": "",
+    "user": "",
+    "pass": "",
+    "remote_dir": "/"
+  },
+  "SUSPICIOUS_PROCESSES": [
+    "bittorrent.exe",
+    "utorrent.exe"
+  ]
+}

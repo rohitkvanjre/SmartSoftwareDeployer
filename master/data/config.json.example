@@ -1,0 +1,36 @@
+{
+  "PORTS": {
+    "control": 5050,
+    "discovery": 5051,
+    "files": 5052
+  },
+  "TLS": {
+    "enabled": true,
+    "verify": true,
+    "server_cert": "data/cert.pem",
+    "server_key": "data/key.pem"
+  },
+  "FTP": {
+    "enabled": false,
+    "secure": true,
+    "host": "",
+    "user": "",
+    "pass": "",
+    "threshold": 5,
+    "remote_dir": "/",
+    "is_local_path": false
+  },
+  "HEALTH": {
+    "ping_seconds": 15,
+    "offline_after_seconds": 45
+  },
+  "SCHEDULER": {
+    "tick_seconds": 5
+  },
+  "POLICIES": {
+    "check_interval_hours": 24
+  },
+  "RETRY": {
+    "install_attempts": 1
+  }
+}
