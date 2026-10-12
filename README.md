@@ -4,6 +4,8 @@ A Windows master/slave software deployment system for pushing application instal
 
 Two single-file installers (`master.exe` and `slave.exe`) are all that's needed to get a full deployment fleet running. Each lab PC joins by entering a short pairing code shown on the master — no configuration files, shared secrets, or project files to copy around.
 
+**[Download the latest release](https://github.com/rohitkvanjre/SmartSoftwareDeployer/releases/latest)**
+
 ---
 
 ## Table of Contents
@@ -14,6 +16,7 @@ Two single-file installers (`master.exe` and `slave.exe`) are all that's needed 
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
 - [Usage](#usage)
+- [For Developers](#for-developers)
 - [Security](#security)
 - [Project Structure](#project-structure)
 - [License](#license)
@@ -99,9 +102,9 @@ Smart Software Deployer provides a lightweight, self-contained alternative: one 
 
 ## Getting Started
 
-### For lab administrators
+Download `master.exe` and `slave.exe` from the **[latest release](https://github.com/rohitkvanjre/SmartSoftwareDeployer/releases/latest)**. They run on Windows 10 or 11 (64-bit) and need nothing else installed — no Python, no source code.
 
-You need two installers: `master.exe` for the admin PC and `slave.exe` for each lab PC. They're not stored in this repository, so you'll build them yourself (see [Building the installers](#building-the-installers) below). The installers contain no secrets, so any `master.exe` works with any `slave.exe`.
+The installers aren't code-signed, so Windows may show "Windows protected your PC" the first time you run them. Click **More info → Run anyway**.
 
 1. Run `master.exe` on the admin/control PC. It generates its own TLS certificate and sets up the local database. On first launch it asks you to set a password for the `admin` account.
 2. In the Master, click **Pair New Slaves...**. This opens a 30-minute pairing window and shows a code like `7KQ4-M2XP`.
@@ -123,20 +126,18 @@ Add `/MASTERIP=192.168.1.10` if broadcast discovery doesn't work on your network
 - To remove a PC (for example, a stolen or retired one), right-click it in the node list and choose **Revoke Pairing...**. It's disconnected immediately and can't reconnect until it's paired again.
 - The Master's certificate is created once and kept. If you reinstall the Master from scratch (deleting its data), every slave must be paired again.
 
-### Building the installers
+## Usage
 
-**Prerequisites:** Python 3.13+, Windows 10/11, [Inno Setup 6](https://jrsoftware.org/isinfo.php), and the developer setup below.
+1. **Add software to the catalog** — drop installer files into the Master's installers folder so they're available to push. For an installed Master that's `C:\ProgramData\SmartSoftwareDeployer\Master\installers`; when running from source it's the `installers` folder at the repository root (create it if it doesn't exist).
+2. **Select target nodes** — pick individual machines or a whole group from the node list.
+3. **Deploy** — choose "Install from Catalog," select one or more applications, and the Master handles the rest: transfer, integrity verification, silent install, and status reporting back in real time.
+4. **Monitor** — the Dashboard tab gives a live view of fleet health and recent deployment outcomes; the Audit Log records every action taken.
 
-`installer_build/build_installers.py` looks for the Inno Setup compiler at a hard-coded path (`ISCC_PATH` near the top of the file). Update it to match where Inno Setup is installed on your machine, then run from the repository root:
+## For Developers
 
-```bash
-pip install pyinstaller
-python installer_build/build_installers.py
-```
+Only needed if you want to run or change the code yourself. To just use the software, download the installers from the [latest release](https://github.com/rohitkvanjre/SmartSoftwareDeployer/releases/latest) instead.
 
-This builds both executables with PyInstaller and compiles both installers. The results are written to `installer_build/out/master.exe` and `installer_build/out/slave.exe`.
-
-### For developers (running from source)
+### Running from source
 
 **Prerequisites:** Python 3.13+ and Windows 10/11.
 
@@ -166,13 +167,6 @@ python -m slave --pair 7KQ4-M2XP
 ```
 
 After it has paired once, start it with plain `python -m slave`. Its credentials are kept in `slave/credentials/`, which git ignores.
-
-## Usage
-
-1. **Add software to the catalog** — drop installer files into the Master's installers folder so they're available to push. For an installed Master that's `C:\ProgramData\SmartSoftwareDeployer\Master\installers`; when running from source it's the `installers` folder at the repository root (create it if it doesn't exist).
-2. **Select target nodes** — pick individual machines or a whole group from the node list.
-3. **Deploy** — choose "Install from Catalog," select one or more applications, and the Master handles the rest: transfer, integrity verification, silent install, and status reporting back in real time.
-4. **Monitor** — the Dashboard tab gives a live view of fleet health and recent deployment outcomes; the Audit Log records every action taken.
 
 ## Security
 
