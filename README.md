@@ -2,7 +2,7 @@
 
 A Windows master/slave software deployment system for pushing application installs, updates, and remote management commands across every PC in a LAN — built to replace manual, pendrive-based software installation in shared computer labs.
 
-Two single-file installers (`master.exe` and `slave.exe`) are all that's needed to get a full deployment fleet running. No manual configuration, shared tokens, or file copying required — everything an admin needs is handled by the installers themselves.
+Two single-file installers (`master.exe` and `slave.exe`) are all that's needed to get a full deployment fleet running. Each lab PC joins by entering a short pairing code shown on the master — no configuration files, shared secrets, or project files to copy around.
 
 ---
 
@@ -49,7 +49,8 @@ Smart Software Deployer provides a lightweight, self-contained alternative: one 
 
 **Security**
 - All master↔slave traffic encrypted with TLS (self-signed certificates generated automatically per machine, no OpenSSL dependency)
-- Shared-secret authentication between master and every slave
+- Code-based pairing: each slave joins with a short, time-limited code and receives its own credential, which can be revoked individually
+- Slaves pin the master's certificate, so another machine on the network can't impersonate the master
 - Password hashing via PBKDF2 for master admin accounts
 - Parameterized database queries and list-based subprocess execution throughout (no shell/SQL injection surface)
 
@@ -98,45 +99,77 @@ Smart Software Deployer provides a lightweight, self-contained alternative: one 
 
 ## Getting Started
 
-### For lab administrators (recommended)
+### For lab administrators
 
-No Python installation or source setup required.
+You need two installers: `master.exe` for the admin PC and `slave.exe` for each lab PC. They're not stored in this repository, so you'll build them yourself (see [Building the installers](#building-the-installers) below). The installers contain no secrets, so any `master.exe` works with any `slave.exe`.
 
-1. Download `master.exe` and run it on the admin/control PC. It generates its own TLS certificate, sets up the local database, and creates the shared authentication token automatically.
-2. Download `slave.exe` and run it on every lab PC that should be managed. It registers itself as a Windows Service, configures the Windows Firewall automatically, and starts on its own.
-3. Slaves discover the Master automatically over the LAN. If your network blocks broadcast traffic, the slave installer offers an optional field to enter the Master's IP address directly.
-4. Log in to the Master application and your slaves will appear as they come online.
+1. Run `master.exe` on the admin/control PC. It generates its own TLS certificate and sets up the local database. On first launch it asks you to set a password for the `admin` account.
+2. In the Master, click **Pair New Slaves...**. This opens a 30-minute pairing window and shows a code like `7KQ4-M2XP`.
+3. Run `slave.exe` on each lab PC and enter that code when asked. It registers itself as a Windows Service, configures Windows Firewall, pairs with the Master, and starts on its own.
+4. Slaves find the Master automatically over the LAN. If your network blocks broadcast traffic (common on Wi-Fi with client isolation), also enter the Master's IP address on the same installer page.
+
+To avoid typing the code on every PC, install silently from a batch file or network share. The pairing dialog shows this command with your code filled in:
+
+```bat
+slave.exe /VERYSILENT /PAIRCODE=7KQ4-M2XP
+```
+
+Add `/MASTERIP=192.168.1.10` if broadcast discovery doesn't work on your network.
+
+**How pairing stays secure.** The code is a one-time key, not the credential itself. Once a slave proves it knows the code, the Master gives that slave its own long random token, which is what authenticates it from then on. The code stops working when the window closes, and the Master stops accepting guesses from a machine after a few wrong attempts. The Master also proves it knows the code before the slave trusts it, and the slave then pins the Master's certificate, so no other machine can pose as the Master.
+
+**Managing pairings.**
+- To re-pair a PC, open a new pairing window and run `slave.exe` on it again with the new code. Its settings are kept.
+- To remove a PC (for example, a stolen or retired one), right-click it in the node list and choose **Revoke Pairing...**. It's disconnected immediately and can't reconnect until it's paired again.
+- The Master's certificate is created once and kept. If you reinstall the Master from scratch (deleting its data), every slave must be paired again.
+
+### Building the installers
+
+**Prerequisites:** Python 3.13+, Windows 10/11, [Inno Setup 6](https://jrsoftware.org/isinfo.php), and the developer setup below.
+
+`installer_build/build_installers.py` looks for the Inno Setup compiler at a hard-coded path (`ISCC_PATH` near the top of the file). Update it to match where Inno Setup is installed on your machine, then run from the repository root:
+
+```bash
+pip install pyinstaller
+python installer_build/build_installers.py
+```
+
+This builds both executables with PyInstaller and compiles both installers. The results are written to `installer_build/out/master.exe` and `installer_build/out/slave.exe`.
 
 ### For developers (running from source)
 
-**Prerequisites:** Python 3.13+, Windows 10/11, Inno Setup 6 (only needed for building installers)
+**Prerequisites:** Python 3.13+ and Windows 10/11.
 
 ```bash
 git clone https://github.com/rohitkvanjre/SmartSoftwareDeployer.git
-cd Smart-Software-Deployer
+cd SmartSoftwareDeployer
 pip install -r requirements.txt
 ```
 
-Run the master from source:
+Create the two local config files from the templates included in the repository (the real files are ignored by git, so they don't exist after a fresh clone):
+
 ```bash
-python -m master
+copy master\data\config.json.example master\data\config.json
+copy slave\config.json.example slave\config.json
 ```
 
-Run the slave from source (as an interactive console, for development):
+Run the master:
+
 ```bash
-python -m slave
+python -m master.main
 ```
 
-To build the distributable installers yourself:
+In the master, click **Pair New Slaves...** to get a pairing code. Then run the slave as a console process (useful for development, since it logs to the terminal instead of running as a Windows Service), passing the code the first time:
+
 ```bash
-pyinstaller installer_build/master.spec --distpath installer_build/dist --workpath installer_build/work
-pyinstaller installer_build/slave.spec --distpath installer_build/dist --workpath installer_build/work
-# then compile installer_build/MasterSetup.iss and SlaveSetup.iss with Inno Setup 6
+python -m slave --pair 7KQ4-M2XP
 ```
+
+After it has paired once, start it with plain `python -m slave`. Its credentials are kept in `slave/credentials/`, which git ignores.
 
 ## Usage
 
-1. **Add software to the catalog** — drop installer files into the Master's `installers` folder (or use the in-app catalog editor) so they're available to push.
+1. **Add software to the catalog** — drop installer files into the Master's installers folder so they're available to push. For an installed Master that's `C:\ProgramData\SmartSoftwareDeployer\Master\installers`; when running from source it's the `installers` folder at the repository root (create it if it doesn't exist).
 2. **Select target nodes** — pick individual machines or a whole group from the node list.
 3. **Deploy** — choose "Install from Catalog," select one or more applications, and the Master handles the rest: transfer, integrity verification, silent install, and status reporting back in real time.
 4. **Monitor** — the Dashboard tab gives a live view of fleet health and recent deployment outcomes; the Audit Log records every action taken.
@@ -145,7 +178,9 @@ pyinstaller installer_build/slave.spec --distpath installer_build/dist --workpat
 
 This project treats a lab network as an untrusted environment by default:
 
-- Every control-channel connection is authenticated with a shared token and encrypted with TLS.
+- All master↔slave traffic is encrypted with TLS. Slaves pin the master's certificate when they pair, so another machine on the network can't pose as the master.
+- Each slave authenticates with its own random token, issued during pairing. The master stores only a hash of it, and any single slave can be revoked without affecting the others. On the slave, the token is readable only by SYSTEM and Administrators, not by the user logged on to the lab PC.
+- Pairing codes are short-lived and can't be guessed online (the master locks out a machine after a few wrong attempts) or cracked offline (each guess costs an scrypt computation).
 - Admin credentials are never stored in plaintext — passwords are hashed with PBKDF2 and a per-user salt.
 - All subprocess execution uses argument lists (never shell strings built from untrusted input), eliminating shell-injection risk.
 - Database access is fully parameterized, eliminating SQL-injection risk.
@@ -155,8 +190,9 @@ This project treats a lab network as an untrusted environment by default:
 ```
 ├── master/              # Master application (GUI, networking, database, auth)
 ├── slave/               # Slave agent (Windows Service, tray app, task execution)
-├── installer_build/     # PyInstaller specs and Inno Setup scripts for both installers
-└── installers/          # Sample/staged installer files for the deployment catalog
+├── common/              # Pairing protocol shared by the master and the slave
+├── installer_build/     # PyInstaller specs, Inno Setup scripts, and build_installers.py
+└── requirements.txt     # Python dependencies
 ```
 
 ## License

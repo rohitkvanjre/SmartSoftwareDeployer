@@ -58,12 +58,7 @@ FTP = settings.get('FTP', {})
 HEALTH = settings.get('HEALTH', {})
 FTP_CONFIG = settings.get('FTP', {})
 
-# --- For security, prioritize environment variables for secrets ---
-# This allows overriding the JSON file with more secure environment variables.
-shared_token = os.getenv('DEPLOYER_SHARED_TOKEN')
-if not shared_token:
-    raise Exception("FATAL: DEPLOYER_SHARED_TOKEN environment variable is not set!")
-
+# Environment variables take priority over config.json for FTP credentials.
 FTP_ENV = {
     "host": os.getenv('DEPLOYER_FTP_HOST'),
     "user": os.getenv('DEPLOYER_FTP_USER'),

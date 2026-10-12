@@ -6,11 +6,6 @@
     "discovery": 5051,
     "files": 5052
   },
-  "TLS": {
-    "enabled": true,
-    "verify": false,
-    "ca_cert": "cert.pem"
-  },
   "TIMEOUTS": {
     "script": 900,
     "msi": 600,

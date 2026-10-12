@@ -41,6 +41,10 @@ master/data/deployer.db
 master/data/cert.conf
 *.db
 
+# Slave pairing secrets (when running from source)
+slave/credentials/
+slave/pairing_code.txt
+
 # Ignore real installer files dropped in for local testing (third-party
 # binaries -- not project source, shouldn't be redistributed via git)
 installers/*

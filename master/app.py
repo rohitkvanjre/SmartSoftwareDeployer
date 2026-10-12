@@ -6,11 +6,11 @@ import os, json, threading, time, hashlib, csv, platform, traceback, shutil
 from datetime import datetime, timezone
 import queue
 from .networking import NetworkServer
+from .pairing import PairingManager
 # from .db import insert, read_all, find_one
 from . import db
 from .config import RETRY, SCHEDULER, AUTO_UPDATE, CATALOG, FTP, POLICIES
 from .gui_modern import MainGUI, ScheduleTimeDialog, SlaveLogPopup
-from .config import shared_token
 import socket
 import logging
 from . import logger as master_logger
@@ -113,6 +113,12 @@ class MasterAppController:
             "on_get_hostnames_for_group": self._get_hostnames_for_group, # Add this helper if not already exposed
             "on_send_and_extract_zip": self.send_and_extract_zip,
 
+            # --- Slave Pairing ---
+            "on_start_pairing": self.start_pairing,
+            "on_stop_pairing": self.stop_pairing,
+            "on_get_pairing_status": self.get_pairing_status,
+            "on_revoke_pairing": self.revoke_pairing,
+
             # --- Power Control ---
             "on_system_shutdown": self.system_shutdown,
             "on_system_restart": self.system_restart,
@@ -161,6 +167,7 @@ class MasterAppController:
             "on_save_config_file", "on_save_slave_config", "on_restart_slave_agent",
             "on_update_agents", "on_update_agents_group",
             "on_send_and_extract_zip",
+            "on_start_pairing", "on_stop_pairing", "on_revoke_pairing",
             "on_system_shutdown", "on_system_restart", "on_system_sleep",
             "on_broadcast_message",
             "on_save_script", "on_delete_script",
@@ -179,7 +186,9 @@ class MasterAppController:
         self.gui.set_compliance_toggle_state(self.compliance_engine_enabled)
         self.gui_queue = queue.Queue()
 
+        self.pairing = PairingManager(on_event=lambda message: self.gui_queue.put(("pairing_event", message)))
         self.network = NetworkServer(
+            pairing=self.pairing,
             on_slave_connected=lambda h, i: self.gui_queue.put(("slave_connected", h, i)),
             on_slave_disconnected=lambda h: self.gui_queue.put(("slave_disconnected", h)),
             on_inventory=lambda h, i: self.gui_queue.put(("inventory_received", h, i)),
@@ -251,7 +260,6 @@ class MasterAppController:
             "filename": filename,
             "sha256": digest,
             "download_method": "ftp" if use_ftp else "direct",
-            "auth": shared_token
         }
 
         self.gui.append_log(f"Queueing Send & Extract ZIP for '{filename}' to {len(hostnames)} target(s)...")
@@ -351,7 +359,6 @@ class MasterAppController:
             "filename": filename,
             "sha256": digest,
             "download_method": "ftp" if use_ftp else "direct",
-            "auth": shared_token
         }
 
         # 4. Send the command to all hosts (send or queue)
@@ -384,20 +391,38 @@ class MasterAppController:
     def request_slave_config(self, hostname):
         """Sends a command to a slave to request its config file."""
         self.gui.append_log(f"Requesting config file from '{hostname}'...")
-        msg = {"action": "get_config", "auth": shared_token}
+        msg = {"action": "get_config"}
         self.network.send_to_client(hostname, msg)
 
     def save_slave_config(self, hostname, content):
         """Sends new config content to a slave to be written to its file."""
         self.gui.append_log(f"Sending updated config file to '{hostname}'...")
-        msg = {"action": "write_config", "data": content, "auth": shared_token}
+        msg = {"action": "write_config", "data": content}
         self.network.send_to_client(hostname, msg)
 
     def restart_slave_agent(self, hostname):
         """Commands a slave agent to restart itself."""
         self.gui.append_log(f"Requesting agent restart for '{hostname}'...")
-        msg = {"action": "restart_agent", "auth": shared_token}
+        msg = {"action": "restart_agent"}
         self.network.send_to_client(hostname, msg)
+
+    # --- Slave Pairing ---
+    def start_pairing(self):
+        self.pairing.start()
+
+    def stop_pairing(self):
+        self.pairing.stop()
+
+    def get_pairing_status(self):
+        return self.pairing.status()
+
+    def revoke_pairing(self, hostname):
+        """Deletes a slave's credential and drops its connection; it can't
+        reconnect until it's paired again."""
+        db.delete_slave_credential(hostname)
+        self.network.close_client_connection(hostname)
+        self.gui.append_log(f"PAIRING: Revoked pairing for '{hostname}'. It must be paired again to reconnect.")
+        self._log_action("REVOKE_PAIRING", hostname, "")
 
     def get_config_content(self):
         """Reads the raw text content of the config.json file."""
@@ -534,7 +559,7 @@ class MasterAppController:
         """Sends a reconnect command and then force-closes the connection from the master side."""
         self.gui.append_log(f"[{hostname}] connection restart requested")
         # Send the command to the slave
-        self.network.send_to_client(hostname, {"action": "reconnect", "auth": shared_token})
+        self.network.send_to_client(hostname, {"action": "reconnect"})
         # Immediately close the connection from our side to force a disconnect event
         self.network.close_client_connection(hostname)
 
@@ -659,7 +684,7 @@ class MasterAppController:
     def request_slave_log(self, hostname):
         """Sends a command to a slave to request its log file."""
         self.gui.append_log(f"Requesting log file from '{hostname}'...")
-        msg = {"action": "get_log", "lines": 200, "auth": shared_token}
+        msg = {"action": "get_log", "lines": 200}
         self.network.send_to_client(hostname, msg)    
 
     def send_file_to_hosts(self, hostnames):
@@ -698,7 +723,6 @@ class MasterAppController:
                 "action": "receive_file", 
                 "filename": filename, 
                 "download_method": "ftp" if use_ftp else "direct",
-                "auth": shared_token
             }
 
             self.gui.append_log(f"Preparing to send file '{filename}' to {len(hostnames)} selected slave(s) (Method: {msg['download_method']})...")
@@ -731,7 +755,7 @@ class MasterAppController:
     #         return
 
     #     filename = installer_files[idx]
-    #     msg = {"action": "receive_file", "filename": filename, "auth": shared_token}
+    #     msg = {"action": "receive_file", "filename": filename}
         
     #     group_members = [r.get("hostname") for r in db.read_all("group_members") if r.get("group_name") == group_name]
     #     if not group_members:
@@ -1071,6 +1095,11 @@ class MasterAppController:
                 elif msg_type == "slave_disconnected":
                     _, hostname = message
                     self._handle_slave_disconnected(hostname)
+
+                elif msg_type == "pairing_event":
+                    _, text = message
+                    self.gui.append_log(f"PAIRING: {text}")
+                    self._log_action("PAIRING", "-", text)
                 
                 elif msg_type == "inventory_received":
                     _, hostname, info = message
@@ -1419,7 +1448,7 @@ class MasterAppController:
                 message = (
                     f"The slave '{hostname}' disconnected immediately after connecting.\n\n"
                     "This is usually caused by a configuration mismatch on the slave machine. Please check:\n\n"
-                    "1. Shared Token: Ensure the 'DEPLOYER_SHARED_TOKEN' environment variable is identical on both master and slave.\n\n"
+                    "1. Pairing: the slave may not be paired with this master, or its pairing was revoked. Open a pairing window and re-run the slave installer with the code.\n\n"
                     "2. Service Account: Ensure the slave's Windows Service 'Log On As' user has the correct password and permissions."
                 )
                 # Schedule the messagebox to run safely on the main GUI thread
@@ -1658,7 +1687,6 @@ class MasterAppController:
             "version": version,
             "required_os": catalog_entry.get("required_os", "").strip(),
             "required_arch": catalog_entry.get("required_arch", "").strip(),
-            "auth": shared_token,
             "pre_install_kill": catalog_entry.get("pre_install_kill", ""),
             "post_install_kill": catalog_entry.get("post_install_kill", ""),
 
@@ -1742,7 +1770,6 @@ class MasterAppController:
             "action": "uninstall",
             "name": software_name,
             "pre_uninstall_kill": pre_kill_list_json, # Add the data to the command
-            "auth": shared_token
         }
         
         self.network.send_to_client(hostname, msg)
@@ -1750,11 +1777,11 @@ class MasterAppController:
         self._log_action("UNINSTALL_SOFTWARE", hostname, software_name)
 
     def request_inventory(self, hostname):
-        self.network.send_to_client(hostname, {"action":"get_inventory","auth":shared_token})
+        self.network.send_to_client(hostname, {"action":"get_inventory"})
         self.gui.append_log(f"[{hostname}] inventory requested")
 
     def disconnect_slave(self, hostname):
-        self.network.send_to_client(hostname, {"action":"shutdown","auth":shared_token})
+        self.network.send_to_client(hostname, {"action":"shutdown"})
         self.gui.append_log(f"[{hostname}] shutdown requested")
 
     # --- Power Control ---
@@ -1769,7 +1796,7 @@ class MasterAppController:
         """
         if not targets:
             return
-        msg = {"action": action, "auth": shared_token}
+        msg = {"action": action}
         online_count = 0
         offline_count = 0
         for hostname in targets:
@@ -1834,7 +1861,7 @@ class MasterAppController:
             messagebox.showinfo("No Connected Slaves", "No slaves are currently connected.", parent=self.root)
             return
 
-        msg = {"action": "display_message", "text": message_text, "auth": shared_token}
+        msg = {"action": "display_message", "text": message_text}
         for hostname in online_hosts:
             self.network.send_to_client(hostname, msg)
 
@@ -1847,7 +1874,7 @@ class MasterAppController:
         if hostname not in self.network.clients:
             messagebox.showwarning("Offline", f"'{hostname}' is not currently connected.", parent=self.root)
             return
-        self.network.send_to_client(hostname, {"action": "get_screenshot", "auth": shared_token})
+        self.network.send_to_client(hostname, {"action": "get_screenshot"})
         self.gui.append_log(f"[{hostname}] screenshot requested")
 
     def request_group_screenshots(self, group_name):
@@ -1866,7 +1893,7 @@ class MasterAppController:
 
         for hostname in online_members:
             self._current_screenshot_request[hostname] = group_name
-            self.network.send_to_client(hostname, {"action": "get_screenshot", "auth": shared_token})
+            self.network.send_to_client(hostname, {"action": "get_screenshot"})
 
         self.gui.append_log(f"Requested screenshots from {len(online_members)} node(s) in '{group_name}'.")
 
@@ -1924,7 +1951,7 @@ class MasterAppController:
 
         self.gui.open_command_results_popup(online_nodes, command)
 
-        msg = {"action": "run_command", "command": command, "auth": shared_token}
+        msg = {"action": "run_command", "command": command}
         for hostname in online_nodes:
             self.network.send_to_client(hostname, msg)
 
@@ -2030,7 +2057,6 @@ class MasterAppController:
             "filename": filename,
             "sha256": digest,
             "download_method": "ftp" if use_ftp else "direct",
-            "auth": shared_token,
         }
 
         self.gui.open_command_results_popup(online_nodes, f"script:{filename}")

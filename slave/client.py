@@ -1,25 +1,13 @@
 # slave/client.py (Final Corrected Version)
 
-import socket, json, time, os, sys, ssl, logging, threading, ipaddress, subprocess
+import socket, json, time, os, sys, logging, threading, ipaddress, subprocess
 from . import tasks, config
 from packaging.version import parse as parse_version
-from .config import shared_token
 from .tasks import RestartServiceException
+from . import pairing
 import psutil
 
 MAX_AGENT_FRAME = 1024 * 1024
-
-def _log_cert_details(cert_path):
-    """Inspects a cert file and logs its Common Name for debugging."""
-    try:
-        cert_dict = ssl._ssl._test_decode_cert(cert_path)
-        subject = dict(x[0] for x in cert_dict['subject'])
-        common_name = subject.get('commonName', 'NOT FOUND')
-        logging.info(f"DEBUG: Certificate at '{cert_path}' has Common Name: {common_name}")
-        return common_name
-    except Exception as e:
-        logging.error(f"DEBUG: Could not inspect certificate file at '{cert_path}': {e}")
-        return None
 
 class SlaveClient:
     @staticmethod
@@ -31,7 +19,7 @@ class SlaveClient:
         discover_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         discover_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         discover_sock.settimeout(1) # Short timeout for each receive attempt
-        message = json.dumps({"type": "DISCOVER_MASTER_REQUEST", "token": shared_token}).encode("utf-8")
+        message = json.dumps({"type": "DISCOVER_MASTER_REQUEST"}).encode("utf-8")
 
         # Get all broadcast addresses for all valid network interfaces
         broadcast_addresses = []
@@ -269,7 +257,8 @@ class SlaveClient:
         self.master_ip = master_ip
         self.control_port = control_port
         self.sock = None
-        self.auth_token = shared_token
+        self.credentials = pairing.load_credentials() or {}
+        self.auth_token = self.credentials.get("token")
         self.status_obj = AgentStatus()     # Create the shared status object
         self.is_running = True 
         self._send_lock = threading.Lock()
@@ -305,30 +294,11 @@ class SlaveClient:
 
             logging.info(f"Connecting to master at {self.master_ip}:{self.control_port}...")
             self.status_obj.set_status(f"Connecting: {self.master_ip}...")
-            
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-            if not config.TLS.get("enabled"):
-                logging.warning("SECURITY WARNING: TLS is disabled - all traffic to the master, including the shared auth token, will be sent in plaintext over the network.")
-
-            if config.TLS.get("enabled"):
-                # ... (your existing SSL wrap logic is unchanged) ...
-                logging.info("TLS is enabled. Wrapping socket...")
-                context = ssl.create_default_context()
-                if config.TLS.get("verify"):
-                    context.verify_mode = ssl.CERT_REQUIRED
-                    context.check_hostname = True
-                    cert_path = os.path.join(config.APP_ROOT, config.TLS.get("ca_cert"))
-                    _log_cert_details(cert_path)
-                    context.load_verify_locations(cert_path)
-                else:
-                    context.check_hostname = False
-                    context.verify_mode = ssl.CERT_NONE
-                self.sock = context.wrap_socket(self.sock, server_hostname=self.master_ip)
-
-            self.sock.connect((self.master_ip, self.control_port))
+            self.sock, _ = pairing.connect_to_master(
+                self.master_ip, self.control_port, self.credentials.get("master_fingerprint"))
             self.sock.settimeout(1.0) # NEW: Set a 1-second timeout
-            
+
             logging.info("Secure connection to master established.")
             self.status_obj.set_status("Connected to Master") # Update status
             self.send_status({"status": "Connected", "message": "Slave is online"})
@@ -338,10 +308,12 @@ class SlaveClient:
         except RestartServiceException:
             logging.info("Restart request received, propagating to service manager.")
             raise # Re-raise for the service wrapper
-        except ssl.SSLCertVerificationError as e:
-            self.status_obj.set_status("SSL CERT ERROR")
-            logging.error(f"FATAL ERROR: SSL Certificate Verification Failed: {e}.")
-            return False
+        except pairing.MasterIdentityError as e:
+            # Retry rather than stop: an impostor answering discovery
+            # shouldn't be able to take this agent offline.
+            self.status_obj.set_status("Master identity mismatch")
+            logging.error(str(e))
+            return True
         except ConnectionRefusedError as e:
             self.status_obj.set_status("Connection Refused")
             logging.warning(f"Connection refused by master: {e}. Will retry.")
@@ -465,7 +437,7 @@ class SlaveClient:
                         tasks.handle_self_update(command, config.SERVICE_NAME, self.master_ip)
                         break # Update task will kill this process   
                     elif action == "ping":
-                        resp = {"action": "pong", "auth": shared_token}
+                        resp = {"action": "pong"}
                         self._send_payload(resp)
                     elif action == "shutdown":
                         logging.info("Received shutdown command from master. Exiting.")

@@ -377,6 +377,7 @@ class MainGUI:
         self._screenshot_group_popups = {}  # group_name -> ScreenshotGroupPopup
         self._command_results_popups = []   # list of open CommandResultsPopup
         self._install_batch_popups = {}     # batch_id -> InstallBatchSummaryPopup
+        self._pairing_dialog = None
 
         self.update_group_list()
         self.root.after(200, self._refresh_dashboard_tab)
@@ -1475,8 +1476,10 @@ class MainGUI:
         self.btn_install.pack(side=tk.LEFT, padx=(0, 5))
         self.btn_add_to_group = ttk.Button(left_button_frame, text="Add to Group", command=self._on_add_to_group)
         self.btn_add_to_group.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_pair = ttk.Button(right_button_frame, text="Pair New Slaves...", command=self._on_pair_slaves)
+        self.btn_pair.pack(side=tk.LEFT, padx=(0, 5))
         self.btn_disconnect = ttk.Button(right_button_frame, text="Disconnect", command=self._on_disconnect)
-        self.btn_disconnect.pack()
+        self.btn_disconnect.pack(side=tk.LEFT)
 
         # --- 5. Set the initial state of the buttons ---
         self._on_node_selected()
@@ -2015,6 +2018,7 @@ class MainGUI:
             context_menu.add_command(label="Restart Connection", command=self._on_reconnect)
             context_menu.add_command(label="Update Slave Agent...", command=self._on_update_agent)
             context_menu.add_command(label="Disconnect Agent (Permanent)", command=self._on_disconnect)
+            context_menu.add_command(label="Revoke Pairing...", command=lambda: self._on_revoke_pairing(iid))
             context_menu.add_separator(background=HEADER_BG)
 
             # --- Power submenu (cached, cleared and repopulated each invocation) ---
@@ -2183,6 +2187,24 @@ class MainGUI:
                     for hostname in nodes_to_add:
                         self.callbacks["on_add_group"](hostname, group_to_add)
                     self.append_log(f"Added {len(nodes_to_add)} node(s) to group '{group_to_add}'")
+
+    def _on_pair_slaves(self):
+        if self._pairing_dialog is not None and self._pairing_dialog.winfo_exists():
+            self._pairing_dialog.lift()
+            return
+        self._pairing_dialog = PairingDialog(self.root, self.callbacks)
+
+    def _on_revoke_pairing(self, hostname):
+        if not messagebox.askyesno(
+            "Revoke Pairing",
+            f"Revoke the pairing for '{hostname}'?\n\n"
+            "It will be disconnected immediately and can't reconnect until it's "
+            "paired again by re-running the slave installer with a new pairing code.",
+            icon="warning", parent=self.root,
+        ):
+            return
+        if self.callbacks.get("on_revoke_pairing"):
+            self.callbacks["on_revoke_pairing"](hostname)
 
     def _on_disconnect(self):
         nodes_to_disconnect = []
@@ -3000,6 +3022,95 @@ class ScreenshotGroupPopup(tk.Toplevel):
             tk.Label(frame, image=photo, bg=BG_COLOR).pack(padx=10, pady=10)
         except Exception as e:
             ttk.Label(frame, text=f"Failed to decode screenshot: {e}", padding=20).pack()
+
+
+class PairingDialog(tk.Toplevel):
+    """Shows the current pairing code and countdown. Closing the dialog
+    leaves the pairing window running; only "Close Pairing Window" ends it."""
+    def __init__(self, parent, callbacks):
+        super().__init__(parent)
+        self.callbacks = callbacks
+        self.title("Pair New Slaves")
+        self.geometry("560x330")
+        self.resizable(False, False)
+        self.configure(bg=BG_COLOR)
+        self.transient(parent)
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Pairing code", font=FONT_LARGE_BOLD).pack(anchor="w")
+        self.code_label = ttk.Label(frame, text="", font=("Consolas", 32, "bold"))
+        self.code_label.pack(anchor="w", pady=(4, 0))
+        self.status_label = ttk.Label(frame, text="", font=FONT_NORMAL)
+        self.status_label.pack(anchor="w", pady=(0, 12))
+
+        ttk.Label(
+            frame, font=FONT_NORMAL, wraplength=510, justify="left",
+            text="Enter this code in the slave installer on each lab PC. To install "
+                 "without typing it on every PC, run the installer silently (for "
+                 "example from a batch file on a USB drive):",
+        ).pack(anchor="w")
+        command_row = ttk.Frame(frame)
+        command_row.pack(fill=tk.X, pady=(6, 12))
+        self.command_var = tk.StringVar()
+        ttk.Entry(command_row, textvariable=self.command_var, state="readonly",
+                  font=("Consolas", 10)).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.copy_button = ttk.Button(command_row, text="Copy", command=self._copy_command)
+        self.copy_button.pack(side=tk.LEFT, padx=(6, 0))
+
+        self.paired_label = ttk.Label(frame, text="", font=FONT_NORMAL, wraplength=510, justify="left")
+        self.paired_label.pack(anchor="w")
+
+        button_row = ttk.Frame(frame)
+        button_row.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(button_row, text="Done", command=self.destroy).pack(side=tk.RIGHT)
+        self.toggle_button = ttk.Button(button_row, text="", command=self._toggle_window)
+        self.toggle_button.pack(side=tk.RIGHT, padx=(0, 6))
+
+        if not self._status().get("open") and self.callbacks.get("on_start_pairing"):
+            self.callbacks["on_start_pairing"]()
+        self._refresh()
+
+    def _status(self):
+        get_status = self.callbacks.get("on_get_pairing_status")
+        return get_status() if get_status else {"open": False, "paired_hosts": []}
+
+    def _toggle_window(self):
+        if self._status().get("open"):
+            self.callbacks["on_stop_pairing"]()
+        else:
+            self.callbacks["on_start_pairing"]()
+        self._refresh()
+
+    def _copy_command(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.command_var.get())
+
+    def _refresh(self):
+        if not self.winfo_exists():
+            return
+        status = self._status()
+        if status.get("open"):
+            minutes, seconds = divmod(status["seconds_left"], 60)
+            self.code_label.config(text=status["code"])
+            self.status_label.config(text=f"Open for another {minutes}:{seconds:02d}")
+            self.command_var.set(f"slave.exe /VERYSILENT /PAIRCODE={status['code']}")
+            self.copy_button.config(state="normal")
+            self.toggle_button.config(text="Close Pairing Window")
+        else:
+            self.code_label.config(text="Closed")
+            self.status_label.config(text="No pairing window is open. Slaves can't pair until you open one.")
+            self.command_var.set("")
+            self.copy_button.config(state="disabled")
+            self.toggle_button.config(text="Open Pairing Window")
+
+        paired = status.get("paired_hosts", [])
+        if paired:
+            self.paired_label.config(text=f"Paired in this window ({len(paired)}): " + ", ".join(paired))
+        else:
+            self.paired_label.config(text="No slaves have paired in this window yet.")
+        self.after(1000, self._refresh)
 
 
 class InstallBatchSummaryPopup(tk.Toplevel):

@@ -9,14 +9,14 @@ import platform
 import socket
 import tempfile
 import shutil
-import ssl
 import psutil
 import shlex
 import logging
 import hashlib
 from . import config
 from pathlib import Path
-from .config import PORTS, TLS, TIMEOUTS
+from .config import PORTS, TIMEOUTS
+from . import pairing
 from datetime import datetime
 from . import config
 from ftplib import FTP_TLS, FTP as FTP_Client, error_perm
@@ -526,23 +526,15 @@ def download_from_master(master_ip, filename, progress_cb=None):
     os.makedirs(DOWNLOADS_PATH, exist_ok=True)
 
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if TLS.get("enabled"):
-            logging.info("TLS enabled for file transfer. Wrapping socket...")
-            context = ssl.create_default_context()
-            if TLS.get("verify"):
-                context.verify_mode = ssl.CERT_REQUIRED
-                context.check_hostname = True
-                cert_path = os.path.join(os.path.dirname(__file__), TLS.get("ca_cert"))
-                context.load_verify_locations(cert_path)
-            else:
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-            sock = context.wrap_socket(sock, server_hostname=master_ip)
+        creds = pairing.load_credentials()
+        if not creds:
+            logging.error("Cannot download from the master: this PC is not paired.")
+            return None
+        sock, _ = pairing.connect_to_master(master_ip, PORTS["files"], creds["master_fingerprint"])
 
         with sock:
-            sock.connect((master_ip, PORTS["files"]))
-            request = json.dumps({"filename": filename, "auth": config.shared_token}).encode('utf-8') + b'\n'
+            request = json.dumps({"filename": filename, "hostname": socket.gethostname(),
+                                  "auth": creds["token"]}).encode('utf-8') + b'\n'
             sock.sendall(request)
             
             buffer = b""

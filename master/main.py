@@ -64,7 +64,6 @@ from master import logger as master_logger
 from master.auth_manager.login import LoginDialog
 from master.auth_manager import manage_users
 from master.auth_manager.auth import generate_salt, hash_password
-from master import config
 from master import generate_certs
 
 def bootstrap_first_user(parent):
@@ -117,16 +116,15 @@ def main():
     """Main entry point for the master application with login."""
     master_logger.setup_logging()
 
-    # Silently (re)generate the TLS certificate for this machine's actual
-    # network address if one doesn't already exist yet -- makes a freshly
-    # installed master work with zero manual setup.
-    if config.TLS.get("enabled"):
-        try:
-            result = generate_certs.ensure_certs_exist()
-            if result.get("generated"):
-                print(f"Generated a new TLS certificate for this machine: {result}")
-        except Exception as e:
-            print(f"WARNING: Could not auto-generate TLS certificate: {e}")
+    # Generate the TLS certificate on first run. It's never regenerated
+    # automatically afterwards: paired slaves pin its fingerprint, so a new
+    # certificate would mean re-pairing every slave.
+    try:
+        result = generate_certs.ensure_certs_exist()
+        if result.get("generated"):
+            print(f"Generated a new TLS certificate for this machine: {result}")
+    except Exception as e:
+        print(f"WARNING: Could not auto-generate TLS certificate: {e}")
 
     # Create a hidden root window to be the parent of the dialog
     root = tk.Tk()

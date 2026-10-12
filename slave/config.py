@@ -22,16 +22,10 @@ except json.JSONDecodeError:
 # --- Assign settings to variables ---
 PROJECT_ROOT = os.path.dirname(APP_ROOT)
 PORTS = settings.get('PORTS', {})
-TLS = settings.get('TLS', {})
 TIMEOUTS = settings.get('TIMEOUTS', {})
 FTP = settings.get('FTP', {})
 SUSPICIOUS_PROCESSES = settings.get('SUSPICIOUS_PROCESSES', [])
 SERVICE_NAME = settings.get('SERVICE_NAME', 'SoftwareDeployerAgent')
-
-# --- For security/flexibility, prioritize environment variables ---
-shared_token = os.getenv('DEPLOYER_SHARED_TOKEN')
-if not shared_token:
-    raise Exception("FATAL: DEPLOYER_SHARED_TOKEN environment variable is not set!")
 
 # Source 1: Credentials from the config.json file
 FTP_CONFIG = settings.get('FTP', {})

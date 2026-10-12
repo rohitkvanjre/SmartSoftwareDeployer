@@ -2,33 +2,21 @@
 Auto-refactored into software_deploy package.
 """
 
-import socket, threading, json, os, traceback, ssl, time, csv
+import socket, threading, json, os, traceback, ssl, time, hmac
 from datetime import datetime, timezone
 from . import db
-from .config import PORTS, TLS, HEALTH, PROJECT_ROOT
-from .config import shared_token
+from .config import PORTS, TLS, HEALTH
 import logging
 from . import config
+from common.pairing_protocol import hash_token
 
 
 BUF = 4096
 MAX_CONTROL_FRAME = 1024 * 1024
 MAX_FILE_HEADER = 4096
 
-def _read_slave_tokens():
-    # optional CSV of per-slave tokens at master/data/slave_tokens.csv (hostname,token)
-    path = os.path.join(PROJECT_ROOT, "master", "data", "slave_tokens.csv")
-    tokens = {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                tokens[r.get("hostname","")] = r.get("token","")
-    except Exception:
-        pass
-    return tokens
-
 class NetworkServer:
-    def __init__(self, on_slave_connected=None, on_slave_disconnected=None, on_inventory=None, on_status=None, on_slave_log=None, on_slave_log_file=None, on_slave_config_file=None) :
+    def __init__(self, on_slave_connected=None, on_slave_disconnected=None, on_inventory=None, on_status=None, on_slave_log=None, on_slave_log_file=None, on_slave_config_file=None, pairing=None) :
         self.port = PORTS["control"]
         self.clients = {}
         self.running = True
@@ -39,11 +27,9 @@ class NetworkServer:
         self.on_slave_log = on_slave_log
         self.on_slave_log_file = on_slave_log_file
         self.on_slave_config_file = on_slave_config_file
-        self._tokens = _read_slave_tokens()
+        self.pairing = pairing
 
     def start(self):
-        if not TLS.get("enabled"):
-            logging.warning("SECURITY WARNING: TLS is disabled - all master<->slave traffic, including the shared auth token, is sent in plaintext.")
         threading.Thread(target=self._run_tcp_server, daemon=True).start()
         threading.Thread(target=self._run_discovery_server, daemon=True).start()
         threading.Thread(target=self._run_file_server, daemon=True).start()
@@ -62,14 +48,13 @@ class NetworkServer:
                 logging.warning(f"Error during force-close for {hostname}: {e}")
 
     def _wrap_server_conn(self, conn):
-        if TLS.get("enabled"):
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            cert_path = os.path.join(config.MASTER_DIR, TLS.get("server_cert"))
-            key_path = os.path.join(config.MASTER_DIR, TLS.get("server_key"))
-
-            ctx.load_cert_chain(cert_path, key_path)
-            return ctx.wrap_socket(conn, server_side=True)
-        return conn
+        # TLS is mandatory: slaves pin this certificate's fingerprint, and
+        # pairing binds its proofs to it.
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        cert_path = os.path.join(config.MASTER_DIR, TLS.get("server_cert", "data/cert.pem"))
+        key_path = os.path.join(config.MASTER_DIR, TLS.get("server_key", "data/key.pem"))
+        ctx.load_cert_chain(cert_path, key_path)
+        return ctx.wrap_socket(conn, server_side=True)
 
     def _run_tcp_server(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -92,6 +77,9 @@ class NetworkServer:
 
     def _handle_client(self, conn, addr):
         ip = addr[0]
+        # Set once the connection's first message authenticates; every later
+        # message on this connection is attributed to this hostname,
+        # whatever hostname it claims.
         hostname = None
         buf = b""
         try:
@@ -106,18 +94,20 @@ class NetworkServer:
                     line, buf = buf.split(b"\n", 1)
                     if not line:
                         continue
-                    
+
                     msg = json.loads(line.decode("utf-8", errors="replace"))
 
-                    if not self._auth_ok(msg):
-                        print(f"[AUTH FAIL] {addr}")
-                        try: conn.close()
-                        except: pass
-                        return
+                    if hostname is None:
+                        if msg.get("type") == "pair_request" and self.pairing:
+                            self.pairing.handle(conn, ip, msg, buf)
+                            return
+                        if not self._auth_ok(msg):
+                            logging.warning(f"[AUTH FAIL] Rejected connection from {ip} claiming to be '{msg.get('hostname')}'.")
+                            return
+                        hostname = msg.get("hostname")
 
                     # This is the single, correct block for handling all message types
                     event_type = msg.get("status")
-                    hostname = msg.get("hostname") or hostname 
 
                     if event_type == "Connected":
                         if self.on_slave_connected and hostname:
@@ -178,10 +168,11 @@ class NetworkServer:
                 data, addr = u.recvfrom(1024)
                 try:
                     parsed = json.loads(data.decode("utf-8"))
-                    token = parsed.get("token")
-                    if parsed.get("type") == "DISCOVER_MASTER_REQUEST" and (
-                        token == shared_token or token in set(self._tokens.values())
-                    ):
+                    # Answered without authentication: unpaired slaves need
+                    # to find the master to pair at all, and the master's
+                    # address isn't secret. Slaves verify the master's
+                    # identity by certificate pin / pairing proof instead.
+                    if parsed.get("type") == "DISCOVER_MASTER_REQUEST":
                         u.sendto(f"MASTER_HERE:{self.port}".encode("utf-8"), addr)
                     else:
                         logging.debug(f"Ignored invalid discovery probe from {addr}")
@@ -262,23 +253,15 @@ class NetworkServer:
                 self.send_to_client(hostname, msg)
 
 
-    # In master/networking.py, replace the _auth_ok function
-
     def _auth_ok(self, msg):
-        auth_field = msg.get("auth")
-        if isinstance(auth_field, dict):
-            received_token = auth_field.get("shared_token") or auth_field.get("token")
-        else:
-            received_token = auth_field
-        expected_secret = shared_token
-
-        # print("--- AUTHENTICATION CHECK ---")
-       
-        if received_token == expected_secret or received_token in set(self._tokens.values()):
-            return True
-        
-        logging.warning(f"[AUTH FAIL] Denied connection from an unknown source.")
-        return False
+        """Checks a slave's own pairing-issued token against the stored hash
+        for the hostname it claims."""
+        hostname = msg.get("hostname")
+        token = msg.get("auth")
+        if not isinstance(hostname, str) or not isinstance(token, str):
+            return False
+        stored_hash = db.get_slave_token_hash(hostname)
+        return stored_hash is not None and hmac.compare_digest(hash_token(token), stored_hash)
 
         # ---- Health ----  
         # This is the missing health-check/heartbeat function
@@ -288,7 +271,7 @@ class NetworkServer:
             for host, (conn, ip, last_pong) in list(self.clients.items()):
                 try:
                     # Periodically send a 'ping' to the client
-                    ping_msg = {"action": "ping", "auth": shared_token}
+                    ping_msg = {"action": "ping"}
                     conn.sendall((json.dumps(ping_msg) + "\n").encode("utf-8"))
                 except Exception:
                     # If sending fails, we'll catch it on the timeout below

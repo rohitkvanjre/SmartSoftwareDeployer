@@ -1,13 +1,11 @@
 ; Inno Setup script for the Master application.
 ; Build with (from repo root):
-;   "C:\Users\vanjr\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer_build\MasterSetup.iss /DSharedToken=<token> /DSourceDist=installer_build\dist\master /DOutputDir=installer_build\out
+;   "C:\Users\vanjr\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer_build\MasterSetup.iss /DSourceDist=installer_build\dist\master /DOutputDir=installer_build\out
 ;
-; SharedToken, SourceDist and OutputDir are supplied by the build script at
-; compile time -- nothing secret is stored in this file itself.
+; The installer contains no secrets: the master generates its own TLS
+; certificate on first launch, and slaves pair with it using a short-lived
+; code shown in the app.
 
-#ifndef SharedToken
-  #define SharedToken "CHANGEME"
-#endif
 #ifndef SourceDist
   #define SourceDist "dist\master"
 #endif
@@ -70,13 +68,9 @@ Name: "{group}\Smart Software Deployer - Master"; Filename: "{app}\SmartDeployer
 Name: "{autodesktop}\Smart Software Deployer - Master"; Filename: "{app}\SmartDeployerMaster.exe"
 
 [Registry]
-; Set the shared token as a SYSTEM environment variable (not per-user) so it
-; is visible both to interactively-launched GUI processes and to the slave's
-; Windows Service (which runs as LocalSystem) -- mirrors this repo's existing
-; "DEPLOYER_SHARED_TOKEN must be a real env var" security convention.
+; Older versions stored a shared token here. Remove it when upgrading.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
-    ValueType: string; ValueName: "DEPLOYER_SHARED_TOKEN"; ValueData: "{#SharedToken}"; \
-    Flags: preservestringtype
+    ValueType: none; ValueName: "DEPLOYER_SHARED_TOKEN"; Flags: deletevalue
 
 [Run]
 ; Allow this specific program through Windows Firewall on ALL network
@@ -85,16 +79,6 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 ; important on a network Windows classifies as "Public" (default for new
 ; connections), where inbound traffic is blocked much more aggressively.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Smart Software Deployer - Master"" dir=in action=allow program=""{app}\SmartDeployerMaster.exe"" enable=yes profile=any"; Flags: runhidden waituntilterminated; StatusMsg: "Configuring Windows Firewall..."
-; NOTE: deliberately no "launch now" entry here. Launching the app directly
-; from the installer would spawn it as a CHILD PROCESS of Setup.exe, which
-; inherits Setup.exe's OWN environment as captured when Setup.exe itself
-; started -- i.e. BEFORE the [Registry] section above wrote the new
-; DEPLOYER_SHARED_TOKEN. The app would crash with "environment variable is
-; not set" even though the registry is correctly updated. Explorer (and
-; anything it launches, like the Desktop/Start Menu shortcut below) DOES
-; get notified via the BroadcastEnvironmentChange call below and picks up
-; the fresh value correctly -- so launching must happen via the shortcut,
-; never as a direct child of this installer process.
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Smart Software Deployer - Master"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveMasterFirewallRule"
@@ -108,37 +92,16 @@ function SendMessageTimeoutA(hWnd: LongInt; Msg: LongInt; wParam: LongInt; lPara
   fuFlags: LongInt; uTimeout: LongInt; var lpdwResult: LongInt): LongInt;
   external 'SendMessageTimeoutA@user32.dll stdcall';
 
-function SetEnvironmentVariableW(lpName: string; lpValue: string): BOOL;
-  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
-
 procedure BroadcastEnvironmentChange;
 var
   ResultCode: LongInt;
 begin
-  { Notifies already-running processes (e.g. Explorer) that the environment
-    changed, so a Start Menu / Desktop shortcut launched right after this
-    install picks up the new DEPLOYER_SHARED_TOKEN without a reboot/logoff.
-    This does NOT affect Setup.exe's own already-captured environment (see
-    UpdateOwnProcessEnvironment below), only OTHER processes that choose to
-    refresh their cache in response to this broadcast. }
+  { Tells running processes the old DEPLOYER_SHARED_TOKEN variable is gone. }
   SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, ResultCode);
-end;
-
-procedure UpdateOwnProcessEnvironment;
-begin
-  { Setup.exe's own process environment block was captured when it started,
-    BEFORE the [Registry] section wrote DEPLOYER_SHARED_TOKEN -- any [Run]
-    entry after this point would otherwise spawn a child process that
-    inherits that stale (missing) value and crash. Explicitly set it in our
-    own process now so every subsequent [Run] step in this installer sees it. }
-  SetEnvironmentVariableW('DEPLOYER_SHARED_TOKEN', '{#SharedToken}');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-  begin
-    UpdateOwnProcessEnvironment;
     BroadcastEnvironmentChange;
-  end;
 end;

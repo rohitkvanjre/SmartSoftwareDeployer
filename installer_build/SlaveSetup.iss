@@ -1,13 +1,11 @@
 ; Inno Setup script for the Slave agent.
 ; Build with (from repo root):
-;   "C:\Users\vanjr\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer_build\SlaveSetup.iss /DSharedToken=<token> /DSourceDist=installer_build\dist\slave /DOutputDir=installer_build\out
+;   "C:\Users\vanjr\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer_build\SlaveSetup.iss /DSourceDist=installer_build\dist\slave /DOutputDir=installer_build\out
 ;
-; SharedToken MUST be the exact same value used to build MasterSetup.iss in
-; the same build run, or the slave will never authenticate to the master.
+; The installer contains no secrets. Each slave pairs with the master using
+; the code shown on the master's "Pair New Slaves" screen. For unattended
+; installs:  slave.exe /VERYSILENT /PAIRCODE=XXXX-XXXX [/MASTERIP=a.b.c.d]
 
-#ifndef SharedToken
-  #define SharedToken "CHANGEME"
-#endif
 #ifndef SourceDist
   #define SourceDist "dist\slave"
 #endif
@@ -45,11 +43,9 @@ Source: "{#SourceDist}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "..\slave\config.json.example"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
 
 [Registry]
-; Same SYSTEM environment variable as the master installer, so this agent
-; authenticates automatically -- must be built with the identical token.
+; Older versions stored a shared token here. Remove it when upgrading.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
-    ValueType: string; ValueName: "DEPLOYER_SHARED_TOKEN"; ValueData: "{#SharedToken}"; \
-    Flags: preservestringtype
+    ValueType: none; ValueName: "DEPLOYER_SHARED_TOKEN"; Flags: deletevalue
 
 [Run]
 ; Allow this program through Windows Firewall on ALL network profiles
@@ -58,9 +54,9 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 ; especially on a network Windows classifies as "Public" (the default for
 ; new connections), which restricts traffic much more aggressively.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Smart Software Deployer - Slave Agent"" dir=in action=allow program=""{app}\SoftwareDeployerAgent.exe"" enable=yes profile=any"; Flags: runhidden waituntilterminated; StatusMsg: "Configuring Windows Firewall..."
-; Register the Windows Service (this also silently registers the tray-app
-; autostart Scheduled Task -- see slave/service.py's install_tray_autostart(),
-; which looks for tray_app.exe right next to this same exe).
+; Register the Windows Service (this also registers the tray app to start at
+; logon -- see slave/service.py's install_tray_autostart(), which looks for
+; tray_app.exe right next to this same exe).
 ; --startup=auto MUST come before the "install" command -- pywin32's
 ; HandleCommandLine parses options-then-command, not the other way round.
 ; Without it, pywin32 defaults a newly installed service to Manual startup,
@@ -72,6 +68,10 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""S
 ; network is actually up, so "auto" just means the first attempt (and any
 ; retries) happen sooner.
 Filename: "{app}\SoftwareDeployerAgent.exe"; Parameters: "--startup=auto install"; Flags: runhidden waituntilterminated; StatusMsg: "Registering the Software Deployer Agent service..."
+; Stop first so an upgrade always runs a fresh agent process, which picks up
+; a newly entered pairing code immediately. On a fresh install there's
+; nothing to stop and this fails harmlessly.
+Filename: "{app}\SoftwareDeployerAgent.exe"; Parameters: "--wait=30 stop"; Flags: runhidden waituntilterminated; StatusMsg: "Stopping the Software Deployer Agent service..."
 Filename: "{app}\SoftwareDeployerAgent.exe"; Parameters: "start"; Flags: runhidden waituntilterminated; StatusMsg: "Starting the Software Deployer Agent service..."
 
 [UninstallRun]
@@ -85,9 +85,11 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 const
   WM_SETTINGCHANGE = $001A;
   SMTO_ABORTIFHUNG = $0002;
+  { Must match CODE_ALPHABET in common/pairing_protocol.py. }
+  CodeAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 var
-  MasterIPPage: TInputQueryWizardPage;
+  ConnectPage: TInputQueryWizardPage;
 
 function IsValidOctet(const S: string): Boolean;
 var
@@ -150,39 +152,113 @@ begin
     Key := #0;
 end;
 
-procedure InitializeWizard;
+procedure PairingCodeKeyPress(Sender: TObject; var Key: Char);
 begin
-  { Asked once, at install time -- optional. Left blank, MASTER_IP stays null
-    and the slave falls back to UDP-broadcast auto-discovery. Filled in, the
-    slave connects directly to that address instead, which works even on
-    networks (e.g. Wi-Fi with client isolation) where broadcast discovery
-    never reaches the master. }
-  MasterIPPage := CreateInputQueryPage(wpSelectDir,
-    'Master Server Address', 'Optional: enter the Master server''s IP address',
-    'If you know the IP address of the computer running the Master console, ' +
-    'enter it below for a direct, reliable connection (format: ###.###.###.###).' + #13#10#13#10 +
-    'Leave this blank to use automatic discovery instead -- this only works ' +
-    'if both machines are on the same network segment and broadcast traffic ' +
-    'is not blocked (some Wi-Fi networks block this between devices).');
-  MasterIPPage.Add('Master IP Address (optional, e.g. 192.168.1.10):', False);
-  MasterIPPage.Edits[0].OnKeyPress := @MasterIPKeyPress;
+  { Letters, digits, and the separators people naturally type. Ambiguous
+    letters (O, I, L) are allowed and normalized later. }
+  if not (((Key >= '0') and (Key <= '9')) or ((Key >= 'A') and (Key <= 'Z')) or
+          ((Key >= 'a') and (Key <= 'z')) or (Key = '-') or (Key = ' ') or (Key < #32)) then
+    Key := #0;
+end;
+
+{ Mirrors normalize_code() in common/pairing_protocol.py: returns the
+  8-character code, or '' if the input isn't a valid code. }
+function NormalizePairingCode(const S: string): string;
+var
+  I: Integer;
+  Raw, Ch: string;
+begin
+  Result := '';
+  Raw := Uppercase(S);
+  for I := 1 to Length(Raw) do
+  begin
+    Ch := Copy(Raw, I, 1);
+    if (Ch <> '-') and (Ch <> ' ') then
+    begin
+      if Ch = 'O' then
+        Ch := '0';
+      if (Ch = 'I') or (Ch = 'L') then
+        Ch := '1';
+      if Pos(Ch, CodeAlphabet) = 0 then
+      begin
+        Result := '';
+        Exit;
+      end;
+      Result := Result + Ch;
+    end;
+  end;
+  if Length(Result) <> 8 then
+    Result := '';
+end;
+
+function AlreadyPaired: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{commonappdata}\SoftwareDeployerAgent\credentials\slave_credentials.json'));
+end;
+
+{ Shared by the wizard page and silent installs (/PAIRCODE=, /MASTERIP=). }
+function ValidateConnectInputs(const Code, IP: string; var Error: string): Boolean;
+begin
+  Result := False;
+  if (Code = '') and not AlreadyPaired then
+    Error := 'Enter the pairing code shown on the Master''s "Pair New Slaves" screen.'
+  else if (Code <> '') and (NormalizePairingCode(Code) = '') then
+    Error := 'That pairing code isn''t valid. It has 8 letters and digits, like 7KQ4-M2XP.'
+  else if (IP <> '') and not IsValidIPv4(IP) then
+    Error := 'Please enter a valid IPv4 address in the form ###.###.###.### ' +
+      '(each number from 0 to 255), or leave it blank to find the Master automatically.'
+  else
+    Result := True;
+end;
+
+function InitializeSetup: Boolean;
+var
+  Error: string;
+begin
+  Result := True;
+  if WizardSilent and not ValidateConnectInputs(Trim(ExpandConstant('{param:PAIRCODE|}')),
+                                                Trim(ExpandConstant('{param:MASTERIP|}')), Error) then
+  begin
+    Log('Setup aborted: ' + Error);
+    SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
+    Result := False;
+  end;
+end;
+
+procedure InitializeWizard;
+var
+  PairingNote: string;
+begin
+  if AlreadyPaired then
+    PairingNote := 'This PC is already paired. Leave the pairing code blank to keep that pairing, ' +
+      'or enter a new code to pair it again.'
+  else
+    PairingNote := 'Enter the pairing code shown on the Master''s "Pair New Slaves" screen. ' +
+      'It only works while that pairing window is open.';
+
+  ConnectPage := CreateInputQueryPage(wpSelectDir,
+    'Connect to the Master', 'Pair this PC with the Master console',
+    PairingNote + #13#10#13#10 +
+    'The Master IP address is optional. Leave it blank to find the Master automatically; ' +
+    'enter it if your network blocks broadcast traffic (common on Wi-Fi).');
+  ConnectPage.Add('Pairing code (e.g. 7KQ4-M2XP):', False);
+  ConnectPage.Add('Master IP address (optional, e.g. 192.168.1.10):', False);
+  ConnectPage.Edits[0].OnKeyPress := @PairingCodeKeyPress;
+  ConnectPage.Edits[1].OnKeyPress := @MasterIPKeyPress;
+  ConnectPage.Values[0] := ExpandConstant('{param:PAIRCODE|}');
+  ConnectPage.Values[1] := ExpandConstant('{param:MASTERIP|}');
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  IPValue: string;
+  Error: string;
 begin
   Result := True;
-  if CurPageID = MasterIPPage.ID then
+  if CurPageID = ConnectPage.ID then
   begin
-    IPValue := Trim(MasterIPPage.Values[0]);
-    if (IPValue <> '') and not IsValidIPv4(IPValue) then
-    begin
-      MsgBox('Please enter a valid IPv4 address in the form ###.###.###.### ' +
-        '(each number from 0 to 255), or leave the field blank to use ' +
-        'automatic discovery instead.', mbError, MB_OK);
-      Result := False;
-    end;
+    Result := ValidateConnectInputs(Trim(ConnectPage.Values[0]), Trim(ConnectPage.Values[1]), Error);
+    if not Result then
+      MsgBox(Error, mbError, MB_OK);
   end;
 end;
 
@@ -190,33 +266,23 @@ function SendMessageTimeoutA(hWnd: LongInt; Msg: LongInt; wParam: LongInt; lPara
   fuFlags: LongInt; uTimeout: LongInt; var lpdwResult: LongInt): LongInt;
   external 'SendMessageTimeoutA@user32.dll stdcall';
 
-function SetEnvironmentVariableW(lpName: string; lpValue: string): BOOL;
-  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
-
 procedure BroadcastEnvironmentChange;
 var
   ResultCode: LongInt;
 begin
-  { Notifies already-running processes (e.g. Explorer) of the change. This
-    does NOT fix the "install"/"start" [Run] steps below on its own -- see
-    UpdateOwnProcessEnvironment, which is what actually makes those work. }
+  { Tells running processes the old DEPLOYER_SHARED_TOKEN variable is gone. }
   SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, ResultCode);
 end;
 
-procedure UpdateOwnProcessEnvironment;
+procedure SavePairingCode;
+var
+  Code: AnsiString;
 begin
-  { Setup.exe's own process environment was captured when it started, BEFORE
-    the Registry section wrote DEPLOYER_SHARED_TOKEN. The install/start
-    Run-section steps below run SoftwareDeployerAgent.exe as a CHILD of this
-    installer process, inheriting that stale (missing) environment -- which
-    would crash immediately, since slave/config.py checks for this variable
-    at import time regardless of which command-line argument is passed.
-    Explicitly setting it in our own process here fixes that for every
-    subsequent Run-section step. (The actual running Windows Service, once
-    started, gets its environment fresh from the registry via the Service
-    Control Manager regardless -- this fix is specifically for the
-    install/start commands themselves, run directly by Setup.exe.) }
-  SetEnvironmentVariableW('DEPLOYER_SHARED_TOKEN', '{#SharedToken}');
+  { Picked up (and moved into a protected folder) by the agent on its next
+    connection attempt -- see slave/pairing.py. }
+  Code := NormalizePairingCode(Trim(ConnectPage.Values[0]));
+  if Code <> '' then
+    SaveStringToFile(ExpandConstant('{app}\pairing_code.txt'), Code, False);
 end;
 
 function ReplaceMasterIPValue(Content: AnsiString; NewIP: AnsiString): AnsiString;
@@ -279,7 +345,7 @@ begin
     consistently (a plain := assignment from the wizard page's Unicode
     string narrows it to AnsiString, which is fine -- IP addresses/hostnames
     are plain ASCII). }
-  MasterIP := MasterIPPage.Values[0];
+  MasterIP := ConnectPage.Values[1];
   MasterIP := Trim(MasterIP);
 
   ConfigPath := ExpandConstant('{app}\config.json');
@@ -294,8 +360,8 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    UpdateOwnProcessEnvironment;
     BroadcastEnvironmentChange;
     ApplyMasterIPToConfig;
+    SavePairingCode;
   end;
 end;

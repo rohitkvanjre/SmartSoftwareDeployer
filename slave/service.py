@@ -18,7 +18,7 @@ sys.path.append(project_root)
 
 from slave import logger as slave_logger
 from slave.client import SlaveClient, RestartServiceException
-from slave import config
+from slave import config, pairing
 
 # --- CHANGE THESE TO MATCH YOUR SERVICE ---
 SERVICE_NAME = config.SERVICE_NAME # Use the name from your config file
@@ -162,12 +162,13 @@ class SoftwareDeployerAgentSvc(win32serviceutil.ServiceFramework):
                 if configured_ip and configured_ip.lower().strip() not in ['none', 'null', '']:
                     #servicemanager.LogInfoMsg(f"Attempting connection to configured MASTER_IP: {configured_ip}")
                     master_ip = configured_ip
-                    
-                    self.client = SlaveClient(master_ip, control_port)
-                    if not self.client.start():
-                        servicemanager.LogErrorMsg("Exiting due to a fatal, unrecoverable error.")
-                        self.SvcStop()
-                        break
+
+                    if pairing.ensure_paired(master_ip, control_port):
+                        self.client = SlaveClient(master_ip, control_port)
+                        if not self.client.start():
+                            servicemanager.LogErrorMsg("Exiting due to a fatal, unrecoverable error.")
+                            self.SvcStop()
+                            break
 
                     servicemanager.LogWarningMsg(f"Connection to configured IP {master_ip} failed or was lost. Falling back to discovery.")
                     master_ip = None
@@ -183,11 +184,12 @@ class SoftwareDeployerAgentSvc(win32serviceutil.ServiceFramework):
                             control_port = discovered_port
                         
                         servicemanager.LogInfoMsg(f"Master discovered at {master_ip}:{control_port}. Connecting...")
-                        self.client = SlaveClient(master_ip, control_port)
-                        if not self.client.start():
-                            servicemanager.LogErrorMsg("Exiting due to fatal error on discovered IP.")
-                            self.SvcStop()
-                            break
+                        if pairing.ensure_paired(master_ip, control_port):
+                            self.client = SlaveClient(master_ip, control_port)
+                            if not self.client.start():
+                                servicemanager.LogErrorMsg("Exiting due to fatal error on discovered IP.")
+                                self.SvcStop()
+                                break
                     else:
                         servicemanager.LogWarningMsg("Could not find master via discovery.")
                 

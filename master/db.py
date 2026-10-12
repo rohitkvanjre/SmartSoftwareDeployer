@@ -121,6 +121,15 @@ def init_database():
             description TEXT,
             content TEXT NOT NULL
         )""")
+        # Per-slave credentials issued by pairing. Only a hash of each
+        # token is stored, so a copy of this database can't be used to
+        # impersonate a slave.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS slave_credentials (
+            hostname TEXT PRIMARY KEY,
+            token_hash TEXT NOT NULL,
+            paired_at TEXT NOT NULL
+        )""")
         
     print("Database initialized successfully.")
 
@@ -520,4 +529,19 @@ def remove_policy_from_group(group_name):
     """Removes any policy assignment from a group."""
     query = "DELETE FROM group_policies WHERE group_name = ?"
     execute_query(query, (group_name,))
+
+# --- Slave credentials (pairing) ---
+def set_slave_credential(hostname, token_hash):
+    """Stores (or replaces, on re-pairing) the token hash for a slave."""
+    execute_query(
+        "INSERT OR REPLACE INTO slave_credentials (hostname, token_hash, paired_at) VALUES (?, ?, ?)",
+        (hostname, token_hash, datetime.now(timezone.utc).isoformat()),
+    )
+
+def get_slave_token_hash(hostname):
+    rows = read_query("SELECT token_hash FROM slave_credentials WHERE hostname = ?", (hostname,))
+    return rows[0]["token_hash"] if rows else None
+
+def delete_slave_credential(hostname):
+    execute_query("DELETE FROM slave_credentials WHERE hostname = ?", (hostname,))
 

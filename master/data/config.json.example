@@ -5,8 +5,6 @@
     "files": 5052
   },
   "TLS": {
-    "enabled": true,
-    "verify": true,
     "server_cert": "data/cert.pem",
     "server_key": "data/key.pem"
   },
