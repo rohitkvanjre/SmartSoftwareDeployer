@@ -17,6 +17,7 @@ Usage (from repo root):
     python installer_build/build_installers.py
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +28,12 @@ DIST_DIR = BUILD_DIR / "dist"
 WORK_DIR = BUILD_DIR / "work"
 OUT_DIR = BUILD_DIR / "out"
 
-ISCC_PATH = Path(r"C:\Users\vanjr\AppData\Local\Programs\Inno Setup 6\ISCC.exe")
+# Standard Inno Setup 6 locations: a system-wide install, then a per-user one.
+ISCC_CANDIDATES = [
+    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Inno Setup 6" / "ISCC.exe",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+]
+ISCC_PATH = next((p for p in ISCC_CANDIDATES if p.exists()), ISCC_CANDIDATES[0])
 
 
 def run(cmd, **kwargs):
