@@ -106,7 +106,7 @@ Download `master.exe` and `slave.exe` from the **[latest release](https://github
 
 The installers aren't code-signed, so Windows may show "Windows protected your PC" the first time you run them. Click **More info → Run anyway**.
 
-1. Run `master.exe` on the admin/control PC. It generates its own TLS certificate and sets up the local database. On first launch it asks you to set a password for the `admin` account.
+1. Run `master.exe` on the admin/control PC. It generates its own TLS certificate and sets up the local database. On first launch it asks you to set a password for the `admin` account. The Master app needs administrator rights, so Windows asks for permission each time you open it.
 2. In the Master, click **Pair New Slaves...**. This opens a 30-minute pairing window and shows a code like `7KQ4-M2XP`.
 3. Run `slave.exe` on each lab PC and enter that code when asked. It registers itself as a Windows Service, configures Windows Firewall, pairs with the Master, and starts on its own.
 4. Slaves find the Master automatically over the LAN. If your network blocks broadcast traffic (common on Wi-Fi with client isolation), also enter the Master's IP address on the same installer page.
@@ -128,7 +128,7 @@ Add `/MASTERIP=192.168.1.10` if broadcast discovery doesn't work on your network
 
 ## Usage
 
-1. **Add software to the catalog** — drop installer files into the Master's installers folder so they're available to push. For an installed Master that's `C:\ProgramData\SmartSoftwareDeployer\Master\installers`; when running from source it's the `installers` folder at the repository root (create it if it doesn't exist).
+1. **Add software to the catalog** — the simplest way is **Install from Folder** in the Master, which copies the installer you pick into its installers folder automatically. You can also copy files there yourself: for an installed Master that's `C:\ProgramData\SmartSoftwareDeployer\Master\installers`, which only administrators can open, so Windows will ask for permission. When running from source it's the `installers` folder at the repository root (create it if it doesn't exist).
 2. **Select target nodes** — pick individual machines or a whole group from the node list.
 3. **Deploy** — choose "Install from Catalog," select one or more applications, and the Master handles the rest: transfer, integrity verification, silent install, and status reporting back in real time.
 4. **Monitor** — the Dashboard tab gives a live view of fleet health and recent deployment outcomes; the Audit Log records every action taken.
@@ -176,7 +176,8 @@ This project treats a lab network as an untrusted environment by default:
 - Each slave authenticates with its own random token, issued during pairing. The master stores only a hash of it, and any single slave can be revoked without affecting the others. On the slave, the token is readable only by SYSTEM and Administrators, not by the user logged on to the lab PC.
 - Pairing codes are short-lived and can't be guessed online (the master locks out a machine after a few wrong attempts) or cracked offline (each guess costs an scrypt computation).
 - Admin credentials are never stored in plaintext — passwords are hashed with PBKDF2 and a per-user salt.
-- Programs are launched with argument lists, never by pasting text into a shell command. The one deliberate exception is running commands an administrator types into the remote command feature or the catalog's post-install command, which go through the Windows command interpreter by design. Only admin accounts can send them, they arrive only over the authenticated master connection, each one is written to the audit log, and each run is time-limited with its output capped.
+- The Master's data (its private key, user accounts, database and audit log, catalog, and the installers it pushes) is readable and writable only by Administrators and SYSTEM, so a standard user on the Master PC can't read the key, make themselves admin, or change what gets installed on lab PCs.
+- Programs are launched with argument lists, never by pasting text into a shell command. The one deliberate exception is running commands an administrator types into the remote command feature or the catalog's post-install command, which go through the Windows command interpreter by design. Only admin accounts can send them, they arrive only over the authenticated master connection, each one is written to the audit log, and each run is time-limited with its output capped. When the time limit is reached, the command and every program it started are stopped.
 - Agent self-update accepts only a plain `.exe` filename, so a crafted name can't inject commands into the updater script or write outside its temporary folder.
 - Database access is fully parameterized, eliminating SQL-injection risk.
 

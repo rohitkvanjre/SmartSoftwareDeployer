@@ -1,6 +1,6 @@
 ; Inno Setup script for the Master application.
 ; Build with (from repo root):
-;   "C:\Users\vanjr\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer_build\MasterSetup.iss /DSourceDist=installer_build\dist\master /DOutputDir=installer_build\out
+;   python installer_build/build_installers.py
 ;
 ; The installer contains no secrets: the master generates its own TLS
 ; certificate on first launch, and slaves pair with it using a short-lived
@@ -36,22 +36,18 @@ DisableFinishedPage=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Dirs]
-; The app's own files (exe, DLLs) live under Program Files and are never
-; written to after install -- fine for a standard install location.
-; But the app's MUTABLE data (config.json, TLS cert/key, the database, the
-; catalog, the installers folder, logs) must NOT live there: Program Files
-; is not writable by a normal (non-admin) launch of the app, which is how
-; it's actually run after this elevated installer finishes. Windows'
-; standard answer for "machine-wide app data any user can read/write" is
-; %ProgramData%, so that's where master/config.py (MASTER_DIR) now points
-; in a frozen build -- create it here with explicit write access for
-; standard users, since a freshly created ProgramData subfolder does NOT
-; inherit write access for non-admins by default.
-Name: "{commonappdata}\SmartSoftwareDeployer\Master"; Permissions: users-modify
-Name: "{commonappdata}\SmartSoftwareDeployer\Master\data"; Permissions: users-modify
-Name: "{commonappdata}\SmartSoftwareDeployer\Master\auth_manager"; Permissions: users-modify
-Name: "{commonappdata}\SmartSoftwareDeployer\Master\installers"; Permissions: users-modify
-Name: "{commonappdata}\SmartSoftwareDeployer\Master\logs"; Permissions: users-modify
+; The master's mutable data lives in %ProgramData% (master/config.py,
+; MASTER_DIR): config.json, the TLS private key, users.json, the database
+; with the audit log, the catalog, the installers that get pushed to every
+; lab PC, and logs. Anyone who can change these controls the whole fleet,
+; so after install they're locked to Administrators and SYSTEM only (see
+; LockDownMasterData below), and the master app itself requires admin
+; rights to run (uac_admin in master.spec).
+Name: "{commonappdata}\SmartSoftwareDeployer\Master"
+Name: "{commonappdata}\SmartSoftwareDeployer\Master\data"
+Name: "{commonappdata}\SmartSoftwareDeployer\Master\auth_manager"
+Name: "{commonappdata}\SmartSoftwareDeployer\Master\installers"
+Name: "{commonappdata}\SmartSoftwareDeployer\Master\logs"
 
 [Files]
 Source: "{#SourceDist}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -100,8 +96,48 @@ begin
   SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, ResultCode);
 end;
 
+function RunIcacls(const Params: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  ResultCode := -1;
+  Result := Exec(ExpandConstant('{sys}\icacls.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+    and (ResultCode = 0);
+  if not Result then
+    Log(Format('icacls %s failed (exit code %d)', [Params, ResultCode]));
+end;
+
+{ Restricts the master's data folder to Administrators (S-1-5-32-544) and
+  SYSTEM (S-1-5-18). Three steps, because removing the old grants alone
+  isn't enough on an upgrade:
+  1. Make Administrators the owner of everything. Older versions ran the
+     master as a normal user, so that user owns users.json, the database
+     and the key -- and a file's owner can always rewrite its permissions.
+  2. Reset every file and subfolder to plain inherited permissions, which
+     drops the explicit "Users: modify" grants older versions added.
+  3. Stop inheriting from %ProgramData% (which lets all users read) and
+     grant only Administrators and SYSTEM; everything below inherits that. }
+procedure LockDownMasterData;
+var
+  DataRoot: string;
+  OwnerOk, ResetOk, GrantOk: Boolean;
+begin
+  DataRoot := '"' + ExpandConstant('{commonappdata}\SmartSoftwareDeployer\Master') + '"';
+  OwnerOk := RunIcacls(DataRoot + ' /setowner *S-1-5-32-544 /T /C /Q');
+  ResetOk := RunIcacls(DataRoot + ' /reset /T /C /Q');
+  GrantOk := RunIcacls(DataRoot + ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /C /Q');
+  if not (OwnerOk and ResetOk and GrantOk) then
+    SuppressibleMsgBox('Setup could not fully restrict access to the Master''s data folder:' + #13#10 +
+      ExpandConstant('{commonappdata}\SmartSoftwareDeployer\Master') + #13#10#13#10 +
+      'Other users of this PC may be able to read or change it. Run Setup again, ' +
+      'or check the folder''s permissions manually.', mbError, MB_OK, IDOK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     BroadcastEnvironmentChange;
+    LockDownMasterData;
+  end;
 end;

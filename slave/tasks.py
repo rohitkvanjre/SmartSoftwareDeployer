@@ -10,6 +10,7 @@ import socket
 import tempfile
 import shutil
 import psutil
+import signal
 import shlex
 import logging
 import hashlib
@@ -1145,7 +1146,95 @@ def _cap_output(text):
     return text
 
 
-def run_shell_command(command):
+SHELL_COMMAND_TIMEOUT_SECONDS = 60
+
+
+def _windows_job_for(pid):
+    """Puts a process into a new Windows Job Object and returns the job
+    handle (or None). Every process it starts from then on joins the job
+    automatically, so terminating the job reaches all of them -- including
+    ones whose parent has already exited, which a parent/child walk misses."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    process = kernel32.OpenProcess(0x0100 | 0x0001, False, pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+    assigned = bool(process) and bool(kernel32.AssignProcessToJobObject(job, process))
+    if process:
+        kernel32.CloseHandle(process)
+    if not assigned:
+        kernel32.CloseHandle(job)
+        logging.warning("Could not place a command in a job object; on timeout only its "
+                        "currently running child processes will be stopped.")
+        return None
+    return job
+
+
+def _kill_process_tree(proc, job):
+    # Walk the tree first, while the parent links still exist. This also
+    # covers anything a child started in the instant before it joined the job.
+    try:
+        for child in psutil.Process(proc.pid).children(recursive=True):
+            try:
+                child.kill()
+            except psutil.Error:
+                pass
+    except psutil.Error:
+        pass
+    if job:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        kernel32.TerminateJobObject(job, 1)
+    elif platform.system() != "Windows":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run_time_limited(args, timeout, shell=False):
+    """Runs a command and returns (returncode, stdout, stderr, timed_out).
+    On timeout it stops the command AND every process it started, not just
+    the top-level process (subprocess's own timeout kills only that one)."""
+    is_windows = platform.system() == "Windows"
+    popen_kwargs = {"shell": shell, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}
+    if not is_windows:
+        popen_kwargs["start_new_session"] = True  # own process group, killed as a unit
+    proc = subprocess.Popen(args, **popen_kwargs)
+    job = _windows_job_for(proc.pid) if is_windows else None
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout or "", stderr or "", False
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc, job)
+        try:
+            stdout, stderr = proc.communicate(timeout=5)  # collect whatever was printed
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
+        return -1, stdout or "", stderr or "", True
+    finally:
+        if job:
+            import ctypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle(job)
+
+
+def run_shell_command(command, timeout=SHELL_COMMAND_TIMEOUT_SECONDS):
     """Executes a shell command and captures its stdout, stderr, and return code.
 
     This is the one deliberate use of the shell: it runs commands an
@@ -1158,27 +1247,20 @@ def run_shell_command(command):
         # Admin commands can use cmd built-ins (dir, ipconfig | findstr, ...),
         # so they run through the command interpreter on purpose.
         if platform.system() == "Windows":
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                shell=True,
-                timeout=60  # Add a timeout to prevent hanging
-            )
+            returncode, stdout, stderr, timed_out = _run_time_limited(command, timeout, shell=True)
         else:
             # On Linux/macOS, it's safer to split the command and avoid using the shell.
-            cmd_parts = shlex.split(command)
-            result = subprocess.run(
-                cmd_parts,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            returncode, stdout, stderr, timed_out = _run_time_limited(shlex.split(command), timeout)
+
+        if timed_out:
+            note = (f"Command timed out after {timeout} seconds; it and every program "
+                    "it started were stopped.")
+            stderr = f"{stderr}\n{note}" if stderr else note
 
         return {
-            "stdout": _cap_output(result.stdout),
-            "stderr": _cap_output(result.stderr),
-            "returncode": result.returncode
+            "stdout": _cap_output(stdout),
+            "stderr": _cap_output(stderr),
+            "returncode": returncode
         }
     except FileNotFoundError:
         # This can happen on Linux/macOS if the command isn't found
@@ -1448,15 +1530,14 @@ def execute_script_file(script_path):
 
     try:
         logging.info(f"Executing script: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False, timeout=config.TIMEOUTS.get('script', 900)
-        )
+        returncode, stdout, stderr, timed_out = _run_time_limited(cmd, config.TIMEOUTS.get('script', 900))
+        if timed_out:
+            note = "Script execution timed out; it and every program it started were stopped."
+            stderr = f"{stderr}\n{note}" if stderr else note
         return {
-            "stdout": _cap_output(result.stdout), "stderr": _cap_output(result.stderr),
-            "returncode": result.returncode
+            "stdout": _cap_output(stdout), "stderr": _cap_output(stderr),
+            "returncode": returncode
         }
-    except subprocess.TimeoutExpired:
-        return { "stdout": "", "stderr": "Script execution timed out.", "returncode": -1 }
     except Exception as e:
         return { "stdout": "", "stderr": f"An unexpected error occurred: {e}", "returncode": -1 }    
     

@@ -55,6 +55,10 @@ exe = EXE(
     upx=False,
     console=False,
     icon=os.path.join(REPO_ROOT, "master", "app.ico"),
+    # The master's data folder is readable and writable only by
+    # Administrators and SYSTEM (see MasterSetup.iss), so the app must run
+    # with admin rights. Windows shows a UAC prompt on launch.
+    uac_admin=True,
 )
 
 coll = COLLECT(
