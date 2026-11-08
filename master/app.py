@@ -6,7 +6,7 @@ import os, json, threading, time, hashlib, csv, platform, traceback, shutil
 from datetime import datetime, timezone
 import queue
 from .networking import NetworkServer
-from .pairing import PairingManager
+from .pairing import PairingManager, master_ip_addresses
 # from .db import insert, read_all, find_one
 from . import db
 from .config import RETRY, SCHEDULER, AUTO_UPDATE, CATALOG, FTP, POLICIES
@@ -117,6 +117,7 @@ class MasterAppController:
             "on_start_pairing": self.start_pairing,
             "on_stop_pairing": self.stop_pairing,
             "on_get_pairing_status": self.get_pairing_status,
+            "on_get_master_ip_addresses": master_ip_addresses,
             "on_revoke_pairing": self.revoke_pairing,
 
             # --- Power Control ---

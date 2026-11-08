@@ -107,17 +107,17 @@ Download `master.exe` and `slave.exe` from the **[latest release](https://github
 The installers aren't code-signed, so Windows may show "Windows protected your PC" the first time you run them. Click **More info → Run anyway**.
 
 1. Run `master.exe` on the admin/control PC. It generates its own TLS certificate and sets up the local database. On first launch it asks you to set a password for the `admin` account. The Master app needs administrator rights, so Windows asks for permission each time you open it.
-2. In the Master, click **Pair New Slaves...**. This opens a 30-minute pairing window and shows a code like `7KQ4-M2XP`.
+2. In the Master, click **Pair New Slaves...**. This opens a 30-minute pairing window and shows a code like `7KQ4-M2XP`, along with the Master's IP address.
 3. Run `slave.exe` on each lab PC and enter that code when asked. It registers itself as a Windows Service, configures Windows Firewall, pairs with the Master, and starts on its own.
-4. Slaves find the Master automatically over the LAN. If your network blocks broadcast traffic (common on Wi-Fi with client isolation), also enter the Master's IP address on the same installer page.
+4. Also enter the Master's IP address from the pairing window on the same installer page. It's optional — slaves can usually find the Master automatically — but it makes the connection reliable on networks that block broadcast traffic (common on Wi-Fi). If the Master's IP later changes, slaves fall back to finding it automatically.
 
-To avoid typing the code on every PC, install silently from a batch file or network share. The pairing dialog shows this command with your code filled in:
+To avoid typing on every PC, install silently from a batch file or network share. The pairing window shows this command with your code and the Master's IP filled in, ready to copy:
 
 ```bat
-slave.exe /VERYSILENT /PAIRCODE=7KQ4-M2XP
+slave.exe /VERYSILENT /PAIRCODE=7KQ4-M2XP /MASTERIP=192.168.1.10
 ```
 
-Add `/MASTERIP=192.168.1.10` if broadcast discovery doesn't work on your network.
+To upgrade a lab PC to a newer version, just run the new `slave.exe` on it and leave the pairing code blank. Setup stops the running agent itself, so nothing needs to be closed first.
 
 **How pairing stays secure.** The code is a one-time key, not the credential itself. Once a slave proves it knows the code, the Master gives that slave its own long random token, which is what authenticates it from then on. The code stops working when the window closes, and the Master stops accepting guesses from a machine after a few wrong attempts. The Master also proves it knows the code before the slave trusts it, and the slave then pins the Master's certificate, so no other machine can pose as the Master.
 

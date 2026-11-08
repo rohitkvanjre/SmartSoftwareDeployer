@@ -73,6 +73,9 @@ Filename: "{app}\SoftwareDeployerAgent.exe"; Parameters: "--startup=auto install
 ; nothing to stop and this fails harmlessly.
 Filename: "{app}\SoftwareDeployerAgent.exe"; Parameters: "--wait=30 stop"; Flags: runhidden waituntilterminated; StatusMsg: "Stopping the Software Deployer Agent service..."
 Filename: "{app}\SoftwareDeployerAgent.exe"; Parameters: "start"; Flags: runhidden waituntilterminated; StatusMsg: "Starting the Software Deployer Agent service..."
+; Setup closes the tray app before copying files, so start it again for the
+; user running Setup (other users get it at their next logon).
+Filename: "{app}\tray_app.exe"; Flags: nowait runasoriginaluser skipifsilent
 
 [UninstallRun]
 ; Cleanly stop and unregister the service (and its scheduled task, via
@@ -354,6 +357,33 @@ begin
     ConfigContent := ReplaceMasterIPValue(ConfigContent, MasterIP);
     SaveStringToFile(ConfigPath, ConfigContent, False);
   end;
+end;
+
+procedure RunHidden(const Exe, Params: string);
+var
+  ResultCode: Integer;
+begin
+  { Failures are expected and fine here, e.g. on a fresh install where the
+    service and tray app don't exist yet. }
+  Exec(ExpandConstant('{sys}\' + Exe), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Log(Format('%s %s -> exit code %d', [Exe, Params, ResultCode]));
+end;
+
+{ Runs before any file is copied. On an upgrade the agent service and the
+  tray app are running, and Windows won't let Setup replace a program file
+  that's in use ("DeleteFile failed; code 5. Access is denied"). }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  { Clear the "restart on failure" action first, or Windows would relaunch
+    the agent a few seconds after it's stopped, mid-upgrade. The install
+    step in the Run section sets it again (slave/service.py,
+    configure_service_recovery). }
+  RunHidden('sc.exe', 'failure SoftwareDeployerAgent reset= 0 actions= ""');
+  RunHidden('net.exe', 'stop SoftwareDeployerAgent');
+  { Only matters if a graceful stop didn't finish. }
+  RunHidden('taskkill.exe', '/F /IM SoftwareDeployerAgent.exe');
+  RunHidden('taskkill.exe', '/F /IM tray_app.exe');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

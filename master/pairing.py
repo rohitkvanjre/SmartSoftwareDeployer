@@ -6,6 +6,7 @@ receives its own long random token."""
 import json
 import logging
 import os
+import socket
 import ssl
 import threading
 import time
@@ -25,6 +26,29 @@ MAX_REQUESTS_PER_IP = 10
 
 _EXCHANGE_TIMEOUT_SECONDS = 30
 _MAX_LINE_BYTES = 4096
+
+
+def master_ip_addresses():
+    """Returns (primary_ip, other_ips) for display in the pairing dialog.
+
+    A PC can have several addresses, e.g. a WSL/Hyper-V virtual adapter that
+    lab PCs can't reach. The primary is the address Windows would send
+    network traffic from (connecting a UDP socket picks the outgoing
+    interface without sending anything); the rest are listed in case it's
+    the wrong one."""
+    primary = None
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))
+            primary = probe.getsockname()[0]
+    except OSError:
+        pass
+    from .generate_certs import detect_local_ipv4_addresses
+    found = [ip for ip in detect_local_ipv4_addresses()
+             if not ip.startswith(("127.", "169.254.", "0."))]
+    if primary in (None, "0.0.0.0") or primary.startswith(("127.", "169.254.")):
+        primary = found[0] if found else None
+    return primary, [ip for ip in found if ip != primary]
 
 
 def master_cert_fingerprint():

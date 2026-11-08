@@ -3031,10 +3031,16 @@ class PairingDialog(tk.Toplevel):
         super().__init__(parent)
         self.callbacks = callbacks
         self.title("Pair New Slaves")
-        self.geometry("560x330")
+        self.geometry("660x410")
         self.resizable(False, False)
         self.configure(bg=BG_COLOR)
         self.transient(parent)
+
+        get_ips = self.callbacks.get("on_get_master_ip_addresses")
+        try:
+            self.master_ip, other_ips = get_ips() if get_ips else (None, [])
+        except Exception:
+            self.master_ip, other_ips = None, []
 
         frame = ttk.Frame(self, padding=20)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -3045,11 +3051,19 @@ class PairingDialog(tk.Toplevel):
         self.status_label = ttk.Label(frame, text="", font=FONT_NORMAL)
         self.status_label.pack(anchor="w", pady=(0, 12))
 
+        ttk.Label(frame, text="Master IP address", font=FONT_BOLD).pack(anchor="w")
+        ttk.Label(frame, text=self.master_ip or "Not found", font=("Consolas", 16, "bold")).pack(anchor="w")
+        if other_ips:
+            ttk.Label(frame, font=FONT_NORMAL, wraplength=610, justify="left",
+                      text="Other addresses on this PC, if lab PCs can't reach the one above: "
+                           + ", ".join(other_ips)).pack(anchor="w")
+        ttk.Frame(frame, height=12).pack()
+
         ttk.Label(
-            frame, font=FONT_NORMAL, wraplength=510, justify="left",
-            text="Enter this code in the slave installer on each lab PC. To install "
-                 "without typing it on every PC, run the installer silently (for "
-                 "example from a batch file on a USB drive):",
+            frame, font=FONT_NORMAL, wraplength=610, justify="left",
+            text="Enter the code and IP address in the slave installer on each lab PC. "
+                 "To install without typing them on every PC, run the installer "
+                 "silently (for example from a batch file on a USB drive):",
         ).pack(anchor="w")
         command_row = ttk.Frame(frame)
         command_row.pack(fill=tk.X, pady=(6, 12))
@@ -3059,7 +3073,7 @@ class PairingDialog(tk.Toplevel):
         self.copy_button = ttk.Button(command_row, text="Copy", command=self._copy_command)
         self.copy_button.pack(side=tk.LEFT, padx=(6, 0))
 
-        self.paired_label = ttk.Label(frame, text="", font=FONT_NORMAL, wraplength=510, justify="left")
+        self.paired_label = ttk.Label(frame, text="", font=FONT_NORMAL, wraplength=610, justify="left")
         self.paired_label.pack(anchor="w")
 
         button_row = ttk.Frame(frame)
@@ -3095,7 +3109,10 @@ class PairingDialog(tk.Toplevel):
             minutes, seconds = divmod(status["seconds_left"], 60)
             self.code_label.config(text=status["code"])
             self.status_label.config(text=f"Open for another {minutes}:{seconds:02d}")
-            self.command_var.set(f"slave.exe /VERYSILENT /PAIRCODE={status['code']}")
+            command = f"slave.exe /VERYSILENT /PAIRCODE={status['code']}"
+            if self.master_ip:
+                command += f" /MASTERIP={self.master_ip}"
+            self.command_var.set(command)
             self.copy_button.config(state="normal")
             self.toggle_button.config(text="Close Pairing Window")
         else:
