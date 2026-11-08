@@ -1712,7 +1712,9 @@ class MasterAppController:
             
             self.gui.append_log(f"[{hostname}] {log_status} install of {filename} (Method: {msg['download_method']})")
         
-        self._log_action("DEPLOY_SOFTWARE", f"{len(hostnames)} hosts", filename)
+        # The post-install command runs through the slave's shell, so record it.
+        detail = f"{filename} | post-install command: {post_install_cmd}" if post_install_cmd else filename
+        self._log_action("DEPLOY_SOFTWARE", ", ".join(hostnames), detail)
 
     def deploy_from_catalog_to_selected(self, hostname):
         """
@@ -1958,7 +1960,7 @@ class MasterAppController:
         self.gui.append_log(f"Sent command '{command}' to {len(online_nodes)} online node(s).")
         if offline_count:
             self.gui.append_log(f"Skipped {offline_count} offline node(s) for command execution.")
-        self._log_action("RUN_COMMAND", f"{len(online_nodes)} hosts", command)
+        self._log_action("RUN_COMMAND", ", ".join(online_nodes), command)
 
     def _choose_script_source(self):
         """Prompts the admin to pick either a saved script (from the DB) or an

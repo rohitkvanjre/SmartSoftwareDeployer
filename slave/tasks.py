@@ -1132,11 +1132,31 @@ def get_system_info():
         logging.error(f"CRITICAL ERROR in get_inventory: {e}", exc_info=True)
         return {}
     
+# Output sent back to the master travels as one JSON message, which the
+# master refuses above 1 MB (dropping the connection). JSON escaping can
+# grow text up to 6x, so each stream is capped well below that.
+MAX_COMMAND_OUTPUT_CHARS = 50_000
+
+
+def _cap_output(text):
+    if text and len(text) > MAX_COMMAND_OUTPUT_CHARS:
+        dropped = len(text) - MAX_COMMAND_OUTPUT_CHARS
+        return text[:MAX_COMMAND_OUTPUT_CHARS] + f"\n[... output truncated: {dropped} more characters ...]"
+    return text
+
+
 def run_shell_command(command):
-    """Executes a shell command and captures its stdout, stderr, and return code."""
+    """Executes a shell command and captures its stdout, stderr, and return code.
+
+    This is the one deliberate use of the shell: it runs commands an
+    administrator typed on the master (remote command feature) or put in
+    the catalog's post-install command. Those requests only arrive over the
+    authenticated, certificate-pinned master connection, the master only
+    lets admin accounts send them and audit-logs them, and here they are
+    time-limited and their output is capped."""
     try:
-        # On Windows, built-in commands like 'ipconfig' require shell=True 
-        # and work more reliably when passed as a single string.
+        # Admin commands can use cmd built-ins (dir, ipconfig | findstr, ...),
+        # so they run through the command interpreter on purpose.
         if platform.system() == "Windows":
             result = subprocess.run(
                 command,
@@ -1156,8 +1176,8 @@ def run_shell_command(command):
             )
 
         return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": _cap_output(result.stdout),
+            "stderr": _cap_output(result.stderr),
             "returncode": result.returncode
         }
     except FileNotFoundError:
@@ -1236,14 +1256,11 @@ def run_health_check():
 class SystemPower:
     """Handles OS-level power operations like shutdown, restart, and sleep."""
     @staticmethod
-    def _run(cmd, shell=False):
-        """Executes a power command."""
+    def _run(cmd):
+        """Executes a power command given as an argument list."""
         try:
-            # The shell parameter is added to handle special cases
-            subprocess.run(cmd, check=True, capture_output=True, text=True, shell=shell)
-            # Command is a list for logging, convert string to list if needed
-            cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
-            return True, f"Command '{cmd_str}' executed."
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return True, f"Command '{' '.join(cmd)}' executed."
         except Exception as e:
             return False, f"Failed to execute power command: {e}"
 
@@ -1267,8 +1284,9 @@ class SystemPower:
     def sleep():
         system = platform.system()
         if system == "Windows":
-            # CORRECTED: This specific command must be run with shell=True
-            return SystemPower._run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+            # rundll32 reads its own command line; this produces exactly
+            # "rundll32.exe powrprof.dll,SetSuspendState 0,1,0".
+            return SystemPower._run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
         elif system == "Linux":
             return SystemPower._run(["systemctl", "suspend"])
         elif system == "Darwin": # macOS
@@ -1434,13 +1452,17 @@ def execute_script_file(script_path):
             cmd, capture_output=True, text=True, check=False, timeout=config.TIMEOUTS.get('script', 900)
         )
         return {
-            "stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode
+            "stdout": _cap_output(result.stdout), "stderr": _cap_output(result.stderr),
+            "returncode": result.returncode
         }
     except subprocess.TimeoutExpired:
         return { "stdout": "", "stderr": "Script execution timed out.", "returncode": -1 }
     except Exception as e:
         return { "stdout": "", "stderr": f"An unexpected error occurred: {e}", "returncode": -1 }    
     
+_SAFE_AGENT_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}\.exe", re.IGNORECASE)
+
+
 def handle_self_update(command, service_name, master_ip):
     """
     Handles the entire agent self-update process.
@@ -1453,6 +1475,14 @@ def handle_self_update(command, service_name, master_ip):
 
         if not all([filename, expected_hash, service_name]):
             logging.error("AGENT_UPDATE: Invalid update command. Missing data.")
+            return
+
+        # The filename ends up inside the updater batch script below, where
+        # characters like % " & ^ ! would be interpreted by cmd, and "..\"
+        # or a full path would put the file somewhere else. Accept only a
+        # plain .exe name.
+        if not _SAFE_AGENT_FILENAME.fullmatch(filename):
+            logging.error(f"AGENT_UPDATE: Rejected unsafe update filename {filename!r}.")
             return
 
         # 1. Download the new agent executable
@@ -1556,8 +1586,10 @@ del "{updater_bat_path}"
         # that is about to be terminated by the 'sc stop' command.
         logging.info(f"AGENT_UPDATE: Launching detached updater: {updater_bat_path}")
         subprocess.Popen(
-            [updater_bat_path],
-            shell=True,
+            # A .bat always runs under cmd; invoking it explicitly as an
+            # argument list is equivalent to shell=True for this fixed,
+            # internally built path.
+            [os.environ.get("ComSpec", "cmd.exe"), "/c", updater_bat_path],
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL

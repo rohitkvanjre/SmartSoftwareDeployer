@@ -176,7 +176,8 @@ This project treats a lab network as an untrusted environment by default:
 - Each slave authenticates with its own random token, issued during pairing. The master stores only a hash of it, and any single slave can be revoked without affecting the others. On the slave, the token is readable only by SYSTEM and Administrators, not by the user logged on to the lab PC.
 - Pairing codes are short-lived and can't be guessed online (the master locks out a machine after a few wrong attempts) or cracked offline (each guess costs an scrypt computation).
 - Admin credentials are never stored in plaintext — passwords are hashed with PBKDF2 and a per-user salt.
-- All subprocess execution uses argument lists (never shell strings built from untrusted input), eliminating shell-injection risk.
+- Programs are launched with argument lists, never by pasting text into a shell command. The one deliberate exception is running commands an administrator types into the remote command feature or the catalog's post-install command, which go through the Windows command interpreter by design. Only admin accounts can send them, they arrive only over the authenticated master connection, each one is written to the audit log, and each run is time-limited with its output capped.
+- Agent self-update accepts only a plain `.exe` filename, so a crafted name can't inject commands into the updater script or write outside its temporary folder.
 - Database access is fully parameterized, eliminating SQL-injection risk.
 
 ## Project Structure
