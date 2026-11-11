@@ -4,6 +4,8 @@ A Windows master/slave software deployment system for pushing application instal
 
 Two single-file installers (`master.exe` and `slave.exe`) are all that's needed to get a full deployment fleet running. Each lab PC joins by entering a short pairing code shown on the master — no configuration files, shared secrets, or project files to copy around.
 
+The project is described in a peer-reviewed paper: *Smart Network-Based Automated Software Deployment for Multi-System Lab Environments*, IJIRIS, Vol. 11, Issue 08, Nov 2025 ([DOI: 10.26562/ijiris.2025.v1108.25](https://doi.org/10.26562/ijiris.2025.v1108.25)).
+
 **[Download the latest release](https://github.com/rohitkvanjre/SmartSoftwareDeployer/releases/latest)**
 
 ---
@@ -12,6 +14,7 @@ Two single-file installers (`master.exe` and `slave.exe`) are all that's needed 
 
 - [Why This Exists](#why-this-exists)
 - [Key Features](#key-features)
+- [Results](#results)
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
@@ -19,6 +22,7 @@ Two single-file installers (`master.exe` and `slave.exe`) are all that's needed 
 - [For Developers](#for-developers)
 - [Security](#security)
 - [Project Structure](#project-structure)
+- [Publication](#publication)
 - [License](#license)
 
 ---
@@ -33,12 +37,14 @@ Smart Software Deployer provides a lightweight, self-contained alternative: one 
 
 **Deployment**
 - Silent install/uninstall of `.exe` and `.msi` packages, individually or in bulk across selected nodes or entire groups
-- Automatic installer-type detection (NSIS, Inno Setup, InstallShield, WiX Burn) — deploys most software silently without ever needing to hand-configure silent-install flags
+- Handles 5 installer types automatically: MSI, plus NSIS, Inno Setup, InstallShield and WiX Burn `.exe` installers detected by their file signature, so most software deploys silently without hand-configured silent-install flags
 - Hybrid file transfer: direct socket transfer for small batches, automatic fallback to FTP for large-scale rollouts
-- Content-hash verification on every transfer, so a stale cached file is never mistaken for the version currently being pushed
+- SHA-256 verification on every transfer, so a stale cached file is never mistaken for the version currently being pushed
+- Local installer cache: a file already on the PC with a matching hash isn't downloaded again
+- Commands for offline PCs are queued and delivered automatically when they reconnect
 - Scheduled deployments and remote agent self-update (with automatic backup/rollback if an update fails to start)
 
-**Remote Management & Monitoring**
+**Remote Management & Monitoring** (15+ remote operations)
 - Live dashboard with fleet-wide status, deployment outcome breakdown, and per-node history
 - Full software inventory per machine, refreshed on demand
 - Remote screenshot capture, remote command/PowerShell script execution, and broadcast messaging to logged-in users
@@ -55,7 +61,18 @@ Smart Software Deployer provides a lightweight, self-contained alternative: one 
 - Code-based pairing: each slave joins with a short, time-limited code and receives its own credential, which can be revoked individually
 - Slaves pin the master's certificate, so another machine on the network can't impersonate the master
 - Password hashing via PBKDF2 for master admin accounts
-- Parameterized database queries and list-based subprocess execution throughout (no shell/SQL injection surface)
+- Parameterized database queries and list-based subprocess execution; the only shell use is the admin-only remote command feature (see [Security](#security))
+
+## Results
+
+Measured during 2 months of testing in a university computer lab, as reported in the [published paper](https://doi.org/10.26562/ijiris.2025.v1108.25) (Tables 3 and 4). The raw test logs are not included in this repository.
+
+| Metric | Result |
+|---|---|
+| Average deployment time per application (all phases) | 84 s |
+| Redeployment when the installer is already cached | under 2 s |
+| Operations served from cache instead of re-downloading | 27% |
+| Licensing cost | $0, compared with roughly $1,500–5,000+ a year for 50 PCs with commercial tools (paper, Table 2) |
 
 ## Architecture
 
@@ -91,6 +108,7 @@ Smart Software Deployer provides a lightweight, self-contained alternative: one 
 |---|---|
 | Language | Python 3.13 |
 | Master GUI | Tkinter (custom dark theme, Canvas-based dashboard widgets) |
+| Networking | TCP/UDP sockets, FTP, multithreading |
 | Windows Service integration | `pywin32` |
 | Cryptography / TLS | `cryptography`, Python `ssl` |
 | System info & networking | `psutil` |
@@ -190,6 +208,10 @@ This project treats a lab network as an untrusted environment by default:
 ├── installer_build/     # PyInstaller specs, Inno Setup scripts, and build_installers.py
 └── requirements.txt     # Python dependencies
 ```
+
+## Publication
+
+Dr. Karthika K, Rohit K, Prajwal M, Deepesh Singh, Manoj Aradhya M. "Smart Network-Based Automated Software Deployment for Multi-System Lab Environments." *IJIRIS: International Journal of Innovative Research in Information Security*, Vol. 11, Issue 08, pp. 456–462, Nov 2025. https://doi.org/10.26562/ijiris.2025.v1108.25
 
 ## License
 
